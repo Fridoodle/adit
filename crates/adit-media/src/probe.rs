@@ -110,10 +110,18 @@ fn parse(v: &Value, path: &str) -> Result<Info, MediaError> {
     };
 
     let video_duration = vs.and_then(|s| flicks(&s["duration"]));
+    // Matroska states its end time as the duration (12 s for 2 s of video starting at 10 s);
+    // the other demuxers already subtract the start time (H-7).
+    let offset = if format_name.starts_with("matroska") {
+        secs(&format["start_time"]).unwrap_or(0.0).max(0.0)
+    } else {
+        0.0
+    };
+    let container = secs(&format["duration"]).and_then(|d| to_flicks(d - offset));
     let duration = if still {
         None
     } else {
-        flicks(&format["duration"])
+        container
             .or(video_duration)
             .or_else(|| audio_stream.and_then(|s| flicks(&s["duration"])))
     };
@@ -130,10 +138,7 @@ fn parse(v: &Value, path: &str) -> Result<Info, MediaError> {
             audio,
         },
         still,
-        start: vs
-            .and_then(|s| s["start_time"].as_str()?.parse::<f64>().ok())
-            .filter(|x| x.is_finite())
-            .unwrap_or(0.0),
+        start: vs.and_then(|s| secs(&s["start_time"])).unwrap_or(0.0),
         video_duration,
     })
 }
@@ -148,10 +153,18 @@ fn rational(v: &Value) -> Option<Rational> {
     (r.num > 0 && r.den > 0).then_some(r)
 }
 
+/// Finite seconds string -> f64.
+fn secs(v: &Value) -> Option<f64> {
+    v.as_str()?.parse().ok().filter(|s: &f64| s.is_finite())
+}
+
+fn to_flicks(s: f64) -> Option<Time> {
+    (s >= 0.0).then(|| (s * FLICKS_PER_SECOND as f64).round() as Time)
+}
+
 /// Seconds string -> flicks.
 fn flicks(v: &Value) -> Option<Time> {
-    let s: f64 = v.as_str()?.parse().ok()?;
-    (s.is_finite() && s >= 0.0).then(|| (s * FLICKS_PER_SECOND as f64).round() as Time)
+    secs(v).and_then(to_flicks)
 }
 
 #[cfg(test)]

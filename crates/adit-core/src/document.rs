@@ -1,10 +1,10 @@
 //! Public behaviour API. Signatures are the contract (docs/SPEC.md); command execution lives in
 //! `engine.rs`.
 
-use crate::engine::{edges_unique, execute, nests_itself, prune, transition_ok};
+use crate::engine::{edges_unique, end_ok, execute, nests_itself, too_deep, transition_ok};
 use crate::{
-    CLIP_PARAMS, Clip, ClipSource, Command, Easing, Error, FLICKS_PER_SECOND, Id, Outcome, Param,
-    Project, Rational, SOURCE_SLACK, Sequence, Time, Track, TrackKind,
+    CLIP_PARAMS, Clip, ClipSource, Command, Easing, Error, FLICKS_PER_SECOND, Id, MAX_TIME,
+    Outcome, Param, Project, Rational, SOURCE_SLACK, Sequence, Time, Track, TrackKind,
 };
 use std::collections::HashSet;
 
@@ -32,7 +32,6 @@ impl Document {
     pub fn apply(&mut self, command: Command) -> Result<Outcome, Error> {
         let mut next = self.project.clone();
         let created = execute(&mut next, command)?;
-        prune(&mut next);
         next.validate().map_err(Error::InvalidArgument)?;
         if next != self.project {
             // shortcut: whole-project snapshots per undo step, switch to inverse commands if projects get huge
@@ -80,6 +79,9 @@ fn check_param(p: &Param, what: &str) -> Result<(), String> {
     finite(p.value, what)?;
     for k in &p.keyframes {
         finite(k.value, what)?;
+        if !(-MAX_TIME..=MAX_TIME).contains(&k.time) {
+            return Err(format!("H-3: {what}: keyframe time beyond ±MAX_TIME"));
+        }
     }
     if !p.keyframes.windows(2).all(|w| w[0].time < w[1].time) {
         return Err(format!("{what}: keyframes not sorted with unique times"));
@@ -144,6 +146,12 @@ impl Project {
             if s.markers.iter().any(|m| m.time < 0 || m.duration < 0) {
                 return Err("I6: negative marker time or duration".into());
             }
+            if s.markers
+                .iter()
+                .any(|m| m.time > MAX_TIME || m.duration > MAX_TIME)
+            {
+                return Err("H-3: marker beyond MAX_TIME".into());
+            }
             if !s.markers.windows(2).all(|w| w[0].time <= w[1].time) {
                 return Err("I6: markers not sorted".into());
             }
@@ -153,6 +161,9 @@ impl Project {
             for t in &s.tracks {
                 self.validate_track(t, &ids)?;
             }
+        }
+        if too_deep(self) {
+            return Err("H-4: sequences nested deeper than MAX_NEST_DEPTH".into());
         }
         for m in &self.media {
             if m.spec.duration.is_some_and(|d| d <= 0) {
@@ -168,6 +179,14 @@ impl Project {
     }
 
     fn validate_track(&self, t: &Track, ids: &HashSet<Id>) -> Result<(), String> {
+        // Before anything calls `Clip::end`, which would overflow.
+        if let Some(c) = t
+            .clips
+            .iter()
+            .find(|c| !end_ok(c) || c.source_in > MAX_TIME)
+        {
+            return Err(format!("H-3: clip {} ends or reads beyond MAX_TIME", c.id));
+        }
         for w in t.clips.windows(2) {
             if w[0].end() > w[1].start {
                 return Err(format!(
@@ -195,7 +214,7 @@ impl Project {
                     };
                     if let Some(d) = m.spec.duration {
                         let used = (c.duration as f64 * c.speed).round() as Time;
-                        if c.source_in.saturating_add(used) > d + SOURCE_SLACK {
+                        if c.source_in.saturating_add(used) > d.saturating_add(SOURCE_SLACK) {
                             return Err(format!("I3: clip {} reads past its media", c.id));
                         }
                     }
@@ -309,7 +328,9 @@ impl Clip {
         } else {
             local
         };
-        self.source_in + (span as f64 * self.speed).round() as Time
+        // Saturating: duration * speed is not bounded by MAX_TIME (sequence clips at speed 100).
+        self.source_in
+            .saturating_add((span as f64 * self.speed).round() as Time)
     }
 }
 

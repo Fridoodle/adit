@@ -9,10 +9,19 @@ Concerns: `crates/adit-media/src/{proc,probe,decode,encode}.rs`, fixtures in `cr
 - ffmpeg auto-rotates on decode, so raw frames can differ in size from ffprobe's coded size. Pass
   `-noautorotate` and force `scale=W:H`, or raw-frame reads lose alignment.
 - Exact frame N: plain `-ss t_N` can be one frame off (mkv rounds pts to 1 ms; at 30000/1001 fps frame 1
-  is stored at 0.033 s, before its true start). Working recipe: `-copyts -noaccurate_seek -ss <t - 1s>`
-  plus `select='gte(t, start+(N-0.5)/fps)'` and `-fps_mode passthrough`.
-- Matroska has no per-stream duration; container duration (often the audio) overstates the video
-  length. The decoder must cope with end-of-stream before the estimated last frame.
+  is stored at 0.033 s, before its true start). Working recipe:
+  `-copyts -seek_timestamp 1 -noaccurate_seek -ss <slot - 1s>` plus
+  `-vf fps=fps=N/D:start_time=<absolute slot time>` and `-fps_mode passthrough`. Works for CFR and VFR
+  (holds the last frame) in any access order.
+- Input `-ss` counts from the file's `start_time` unless `-seek_timestamp 1` is given. With `-copyts`
+  and absolute pts, forgetting it double-counts the start offset (frame 100 came back as 190).
+- A test fixture with a start offset only catches seek bugs if it has keyframes near the target
+  (`-g 10` or ffv1). A one-GOP x264 file always falls back to the start and hides the bug.
+- Matroska `format.duration` is the end timestamp (includes `start_time`); mp4 and ts give end minus
+  start. Matroska also has no per-stream duration; container duration (often the audio) overstates
+  the video length, so the decoder must cope with end-of-stream before the estimated last frame.
+- Open: `audio()` counts `start` from the file start time, not from the first audio sample. Differs
+  only when audio starts later than video.
 - Prefix input/output paths with `file:` so names starting with `-` or containing `:` are not parsed
   as options or protocols. Non-ASCII paths work on Windows (UTF-16 argv).
 - `atempo=2.0` output is ~1.6% longer than half (padding). Do not assert exact lengths.

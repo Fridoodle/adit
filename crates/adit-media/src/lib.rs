@@ -73,9 +73,72 @@ pub trait MediaBackend: Send + Sync {
 
 /// Accepts only a plain chain of allow-listed ffmpeg audio filters (SPEC H-6). `Err` names the
 /// rejected part.
-pub fn check_audio_filter(_filter: &str) -> Result<(), String> {
-    todo!()
+pub fn check_audio_filter(filter: &str) -> Result<(), String> {
+    if filter.is_empty() {
+        return Ok(());
+    }
+    if let Some(c) = filter.chars().find(|c| matches!(c, ';' | '[' | ']')) {
+        return Err(format!(
+            "audio filter must be a plain chain without {c:?}: {filter:?}"
+        ));
+    }
+    // A naive split on ',' can only over-reject: ffmpeg's quoting/escaping merges parts, never
+    // splits them further, and every part must start with an allowed name.
+    for part in filter.split(',') {
+        let name = part.split_once('=').map_or(part, |(n, _)| n);
+        if !AUDIO_FILTERS.contains(&name) {
+            return Err(format!("audio filter {name:?} is not allowed"));
+        }
+    }
+    Ok(())
 }
+
+/// SPEC H-6 allow-list: filters that only transform samples (no files, sockets or plugins).
+const AUDIO_FILTERS: &[&str] = &[
+    "volume",
+    "atempo",
+    "areverse",
+    "highpass",
+    "lowpass",
+    "bandpass",
+    "bandreject",
+    "equalizer",
+    "bass",
+    "treble",
+    "acompressor",
+    "alimiter",
+    "agate",
+    "aecho",
+    "chorus",
+    "flanger",
+    "aphaser",
+    "tremolo",
+    "vibrato",
+    "afade",
+    "adelay",
+    "loudnorm",
+    "dynaudnorm",
+    "compand",
+    "anequalizer",
+    "afftdn",
+    "anlmdn",
+    "deesser",
+    "crystalizer",
+    "stereowiden",
+    "extrastereo",
+    "pan",
+    "aresample",
+    "asetrate",
+    "silenceremove",
+    "apad",
+    "atrim",
+    "asetpts",
+    "acontrast",
+    "asoftclip",
+    "speechnorm",
+    "channelmap",
+    "aformat",
+];
 
 /// Real files through ffmpeg subprocesses.
 pub struct Ffmpeg {
@@ -228,6 +291,19 @@ impl MediaBackend for Ffmpeg {
         self.frames.get(&self.ffmpeg, path, &info, n)
     }
 
+    fn detect_silence(
+        &self,
+        path: &str,
+        noise_db: f64,
+        min_duration: Time,
+    ) -> Result<Vec<(Time, Time)>, MediaError> {
+        Ffmpeg::detect_silence(self, path, noise_db, min_duration)
+    }
+
+    fn detect_scenes(&self, path: &str, threshold: f64) -> Result<Vec<Time>, MediaError> {
+        Ffmpeg::detect_scenes(self, path, threshold)
+    }
+
     fn audio(
         &self,
         path: &str,
@@ -236,6 +312,7 @@ impl MediaBackend for Ffmpeg {
         sample_rate: u32,
         filter: &str,
     ) -> Result<Vec<f32>, MediaError> {
+        check_audio_filter(filter).map_err(MediaError::Ffmpeg)?;
         let info = self.info(path)?;
         let Some(a) = info.spec.audio else {
             return Ok(Vec::new());

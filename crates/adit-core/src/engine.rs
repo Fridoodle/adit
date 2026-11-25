@@ -2,7 +2,7 @@
 //! validation and history; everything here may leave the project half-edited on `Err`.
 
 use crate::*;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 type R<T = ()> = Result<T, Error>;
 
@@ -20,6 +20,31 @@ fn fin(x: f64) -> R {
     } else {
         bad("non-finite number")
     }
+}
+
+/// H-3: a time, duration or source position given in a command.
+fn upto(t: Time) -> R {
+    if t > MAX_TIME {
+        bad("time beyond MAX_TIME")
+    } else {
+        Ok(())
+    }
+}
+
+/// H-3: a keyframe time or delta given in a command.
+fn within(t: Time) -> R {
+    if (-MAX_TIME..=MAX_TIME).contains(&t) {
+        Ok(())
+    } else {
+        bad("time beyond ±MAX_TIME")
+    }
+}
+
+/// H-3: `start + duration` without overflow.
+pub(crate) fn end_ok(c: &Clip) -> bool {
+    c.start
+        .checked_add(c.duration)
+        .is_some_and(|e| e <= MAX_TIME)
 }
 
 fn alloc(p: &mut Project) -> Id {
@@ -125,27 +150,30 @@ fn head_trim(c: &mut Clip, h: Time) {
         .chain(effect_params)
         .flat_map(|pm| pm.keyframes.iter_mut())
     {
-        k.time -= h;
+        // Saturating: ripple-start trims move keyframes without bound; validate() rejects H-3.
+        k.time = k.time.saturating_sub(h);
     }
     if has_source_time(c) && !c.reverse {
-        c.source_in += rnd(h, c.speed);
+        // rnd saturates at speed 100; the step check rejects the result (H-3).
+        c.source_in = c.source_in.saturating_add(rnd(h, c.speed));
     }
 }
 
 fn tail_trim(c: &mut Clip, t: Time) {
     c.duration -= t;
     if has_source_time(c) && c.reverse {
-        c.source_in += rnd(t, c.speed);
+        c.source_in = c.source_in.saturating_add(rnd(t, c.speed));
     }
 }
 
-/// R1. Fails with `RippleBlocked` if an unlocked track ends up overlapping or negative.
+/// R1. Fails with `RippleBlocked` if an unlocked track ends up overlapping, negative or past
+/// `MAX_TIME` (H-3).
 fn shift(p: &mut Project, si: usize, from: Time, d: Time) -> R {
     for t in p.sequences[si].tracks.iter_mut().filter(|t| !t.locked) {
         for c in t.clips.iter_mut().filter(|c| c.start >= from) {
             c.start += d;
         }
-        if !track_ok(t) {
+        if !track_ok(t) || !t.clips.iter().all(end_ok) {
             return Err(Error::RippleBlocked { track_id: t.id });
         }
     }
@@ -226,7 +254,9 @@ fn bounds_ok(p: &Project, c: &Clip) -> bool {
         .iter()
         .find(|m| m.id == media_id)
         .and_then(|m| m.spec.duration);
-    len.is_none_or(|d| c.source_in.saturating_add(rnd(c.duration, c.speed)) <= d + SOURCE_SLACK)
+    len.is_none_or(|d| {
+        c.source_in.saturating_add(rnd(c.duration, c.speed)) <= d.saturating_add(SOURCE_SLACK)
+    })
 }
 
 /// Is `target` nested, directly or indirectly, inside sequence `from`?
@@ -345,6 +375,16 @@ fn step(p: &mut Project, cmd: Command, out: &mut Vec<Id>) -> R {
     let locked = snapshot_locked(p);
     run(p, cmd, out)?;
     check_locked(p, &locked)?;
+    let clips = p
+        .sequences
+        .iter()
+        .flat_map(|s| &s.tracks)
+        .flat_map(|t| &t.clips);
+    for c in clips {
+        if !end_ok(c) || c.source_in > MAX_TIME {
+            return bad("clip ends or reads beyond MAX_TIME");
+        }
+    }
     for t in p.sequences.iter_mut().flat_map(|s| s.tracks.iter_mut()) {
         t.clips.sort_by_key(|c| c.start);
         if !track_ok(t) {
@@ -361,6 +401,8 @@ fn step(p: &mut Project, cmd: Command, out: &mut Vec<Id>) -> R {
             return Err(Error::SourceOutOfRange { clip_id: c.id });
         }
     }
+    // H-10: G8 after every command, batch members included.
+    prune(p);
     Ok(())
 }
 
@@ -503,6 +545,7 @@ fn run(p: &mut Project, cmd: Command, out: &mut Vec<Id>) -> R {
             {
                 return bad("media needs a positive duration and a video or audio stream");
             }
+            spec.duration.map_or(Ok(()), upto)?;
             let id = alloc(p);
             p.media.push(Media { id, spec });
             out.push(id);
@@ -590,6 +633,9 @@ fn run(p: &mut Project, cmd: Command, out: &mut Vec<Id>) -> R {
                     what: "sequence",
                     id: sequence_id,
                 });
+            }
+            if let Some(t) = p.sequences[si].tracks.iter().find(|t| t.locked) {
+                return Err(Error::TrackLocked { track_id: t.id });
             }
             p.sequences.remove(si);
         }
@@ -682,6 +728,8 @@ fn run(p: &mut Project, cmd: Command, out: &mut Vec<Id>) -> R {
             if time < 0 || duration < 0 {
                 return bad("negative marker time or duration");
             }
+            upto(time)?;
+            upto(duration)?;
             let id = alloc(p);
             let ms = &mut p.sequences[si].markers;
             let at = ms.partition_point(|m| m.time <= time);
@@ -739,11 +787,16 @@ fn run(p: &mut Project, cmd: Command, out: &mut Vec<Id>) -> R {
             if start < 0 || duration <= 0 {
                 return bad("negative start or non-positive duration");
             }
+            [start, duration, source_in]
+                .into_iter()
+                .try_for_each(upto)?;
+            upto(start + duration)?;
             let (si, ti) = track_ix(p, track_id)?;
             unlocked(p, track_id)?;
             if !fits(p, p.sequences[si].tracks[ti].kind, &source)? {
                 return Err(Error::KindMismatch("source does not fit track kind".into()));
             }
+            let nests = matches!(source, ClipSource::Sequence { .. });
             if let ClipSource::Sequence { sequence_id } = source {
                 let own = p.sequences[si].id;
                 if sequence_id == own || reaches(p, sequence_id, own) {
@@ -829,6 +882,9 @@ fn run(p: &mut Project, cmd: Command, out: &mut Vec<Id>) -> R {
                 let (si, ti) = track_ix(p, t)?;
                 p.sequences[si].tracks[ti].clips.push(c);
             }
+            if nests && too_deep(p) {
+                return bad("sequences nested deeper than MAX_NEST_DEPTH");
+            }
         }
         RemoveClips {
             clip_ids,
@@ -889,6 +945,7 @@ fn run(p: &mut Project, cmd: Command, out: &mut Vec<Id>) -> R {
             if start < 0 || end <= start {
                 return bad("bad range");
             }
+            upto(end)?;
             for ti in range_targets(p, si, &track_ids)? {
                 clear(p, si, ti, start, end)?;
             }
@@ -903,6 +960,7 @@ fn run(p: &mut Project, cmd: Command, out: &mut Vec<Id>) -> R {
             if start < 0 || end <= start {
                 return bad("bad range");
             }
+            upto(end)?;
             for ti in range_targets(p, si, &track_ids)? {
                 clear(p, si, ti, start, end)?;
                 for c in p.sequences[si].tracks[ti]
@@ -920,6 +978,7 @@ fn run(p: &mut Project, cmd: Command, out: &mut Vec<Id>) -> R {
             if time < 0 {
                 return bad("negative time");
             }
+            upto(time)?;
             let clips = &p.sequences[si].tracks[ti].clips;
             let next = clips
                 .iter()
@@ -952,6 +1011,7 @@ fn run(p: &mut Project, cmd: Command, out: &mut Vec<Id>) -> R {
             if time < 0 {
                 return bad("negative time");
             }
+            upto(time)?;
             let targets = range_targets(p, si, &track_ids)?;
             let mut ordered = targets;
             ordered.sort();
@@ -1004,6 +1064,7 @@ fn run(p: &mut Project, cmd: Command, out: &mut Vec<Id>) -> R {
             if start < 0 {
                 return bad("negative start");
             }
+            upto(start)?;
             if mode == PlaceMode::Insert {
                 return bad("insert is not supported for moves");
             }
@@ -1058,6 +1119,7 @@ fn run(p: &mut Project, cmd: Command, out: &mut Vec<Id>) -> R {
             if to < 0 {
                 return bad("negative trim position");
             }
+            upto(to)?;
             let c0 = clip_ref(p, clip_id)?.clone();
             let (si, ti, _) = clip_ix(p, clip_id)?;
             let cur = if edge == Edge::Start {
@@ -1128,6 +1190,7 @@ fn run(p: &mut Project, cmd: Command, out: &mut Vec<Id>) -> R {
             delta,
             include_linked,
         } => {
+            within(delta)?;
             for id in expand(p, &[clip_id], include_linked)? {
                 let c = clip_mut(p, id)?;
                 if !has_source_time(c) {
@@ -1137,6 +1200,7 @@ fn run(p: &mut Project, cmd: Command, out: &mut Vec<Id>) -> R {
             }
         }
         SlideClip { clip_id, delta } => {
+            within(delta)?;
             let c = clip_ref(p, clip_id)?.clone();
             let (si, ti, _) = clip_ix(p, clip_id)?;
             let t = &p.sequences[si].tracks[ti];
@@ -1172,6 +1236,7 @@ fn run(p: &mut Project, cmd: Command, out: &mut Vec<Id>) -> R {
                     return bad("only media and sequence clips have a speed");
                 }
                 let nd = ((c.duration as f64 * c.speed / speed).round() as Time).max(1);
+                upto(nd)?;
                 if id == clip_id {
                     d = nd - c.duration;
                 }
@@ -1261,6 +1326,7 @@ fn run(p: &mut Project, cmd: Command, out: &mut Vec<Id>) -> R {
             easing,
         } => {
             fin(value)?;
+            within(time)?;
             let (m, default) = target_params(p, &target)?;
             let pm = m.entry(target.name).or_insert(Param {
                 value: default,
@@ -1449,4 +1515,25 @@ fn same_sequence(p: &Project, ids: &[Id]) -> R<Vec<Id>> {
 
 pub(crate) fn nests_itself(p: &Project, id: Id) -> bool {
     reaches(p, id, id)
+}
+
+/// H-4: does any sequence nest deeper than `MAX_NEST_DEPTH`? Needs an acyclic nesting graph.
+/// Relaxation instead of recursion: no stack depth or blow-up on hostile projects. After `k`
+/// rounds every depth is at least min(true depth, k + 1) and never above the true depth.
+pub(crate) fn too_deep(p: &Project) -> bool {
+    let mut depth: HashMap<Id, usize> = p.sequences.iter().map(|s| (s.id, 1)).collect();
+    for _ in 0..MAX_NEST_DEPTH {
+        for s in &p.sequences {
+            let kids = s.tracks.iter().flat_map(|t| &t.clips);
+            let d = 1 + kids
+                .filter_map(|c| match c.source {
+                    ClipSource::Sequence { sequence_id } => depth.get(&sequence_id).copied(),
+                    _ => None,
+                })
+                .max()
+                .unwrap_or(0);
+            depth.insert(s.id, d.min(MAX_NEST_DEPTH + 1));
+        }
+    }
+    depth.values().any(|&d| d > MAX_NEST_DEPTH)
 }

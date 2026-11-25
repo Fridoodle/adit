@@ -162,17 +162,27 @@ impl Reader {
         let mut c = command(ffmpeg);
         // -copyts keeps the file's own pts, so `t` in select is comparable with frame n's time.
         c.args(["-v", "error", "-nostdin", "-noautorotate", "-copyts"]);
-        let seek = info.start + start as f64 * frame_s - SEEK_MARGIN_S;
+        let first = info.start + start as f64 * frame_s;
+        let seek = first - SEEK_MARGIN_S;
         if start > 0 && seek > 0.0 {
-            c.args(["-noaccurate_seek", "-ss", &format!("{seek:.6}")]);
+            // Without -seek_timestamp, -ss counts from the file's start time and `first` is
+            // already absolute: files with a start offset would seek past their target.
+            c.args(["-seek_timestamp", "1", "-noaccurate_seek", "-ss"])
+                .arg(format!("{seek:.6}"));
         }
-        // Frames are picked by pts against the midpoint before frame `start`: rounded container
-        // timestamps (mkv: 1 ms) are off by far less than half a frame.
-        let threshold = info.start + (start as f64 - 0.5) * frame_s;
+        // The fps filter maps by timestamp: output frame k is the frame on screen at slot
+        // `start + k` (the latest one not after it, rounded to the nearest slot, which absorbs
+        // mkv's 1 ms pts rounding). Same answer for any `start`, so access order does not
+        // matter on variable-frame-rate files (H-8).
         c.arg("-i")
             .arg(input(path))
             .args(["-map", "0:v:0", "-fps_mode", "passthrough", "-vf"])
-            .arg(format!("select='gte(t,{threshold:.9})',{}", scale(info)))
+            .arg(format!(
+                "fps=fps={}/{}:start_time={first:.9},{}",
+                fps.num,
+                fps.den,
+                scale(info)
+            ))
             .args(["-f", "rawvideo", "-pix_fmt", "rgba", "-"]);
         let mut proc = Proc::spawn(c)?;
         let stdout = proc.child.stdout.take().expect("stdout is piped");
@@ -302,6 +312,34 @@ mod tests {
         }
         assert_eq!(ff.video_frame(path, S / 2).unwrap().rgba[0], 100);
         drop(ff);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    /// `-ss` counts from the file's start time: a seek computed from absolute pts once landed
+    /// `start_time` too late. Only visible when a keyframe exists near that wrong target, so the
+    /// file is intra-only (ffv1) and long enough; one-GOP files fall back to frame 0 and pass.
+    #[test]
+    fn cold_seek_on_offset_file_is_not_offset_twice() {
+        use crate::{FLICKS_PER_SECOND as S, MediaBackend};
+        let p = std::env::temp_dir().join(format!("adit-media-ofs-{}.mkv", std::process::id()));
+        let out = std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i"])
+            .arg("nullsrc=s=16x16:r=10,geq=r='N*4':g=0:b=0")
+            .args(["-frames:v", "60", "-c:v", "ffv1", "-output_ts_offset", "10"])
+            .arg(&p)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let path = p.to_str().unwrap();
+        for n in [25i64, 40, 3] {
+            let ff = crate::Ffmpeg::new().unwrap();
+            let fr = ff.video_frame(path, n * S / 10).unwrap();
+            assert_eq!(i64::from(fr.rgba[0]), n * 4, "cold read of frame {n}");
+        }
         let _ = std::fs::remove_file(&p);
     }
 }
