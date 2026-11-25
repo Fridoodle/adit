@@ -594,7 +594,7 @@ fn s2_render_mix_source_do_not_block_edits() {
             let r = s3.call(
                 "edit",
                 json!({ "project_id": pid, "commands": [{ "op": "add_clip", "track_id": v2,
-                    "source": solid([1.0, 1.0, 1.0, 1.0]), "start": "5s", "duration": "1f" }] }),
+                    "source": solid([1.0, 1.0, 1.0, 1.0]), "start": "5s", "duration": "1f", "mode": "overwrite" }] }),
             );
             let _ = etx.send(r.map(|_| ()));
         });

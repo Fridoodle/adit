@@ -78,52 +78,52 @@ pub trait UiBridge: Send + Sync {
 impl Session {
     /// Open projects in the order they were opened.
     pub fn projects(&self) -> Vec<ProjectInfo> {
-        todo!()
+        tools::projects(&self.inner)
     }
 
     /// Current revision, cheap enough to call every frame. `None` = no such project.
-    pub fn revision(&self, _project_id: &str) -> Option<u64> {
-        todo!()
+    pub fn revision(&self, project_id: &str) -> Option<u64> {
+        tools::revision(&self.inner, project_id)
     }
 
     /// A copy of the project and the revision it belongs to.
-    pub fn snapshot(&self, _project_id: &str) -> Option<(adit_core::Project, u64)> {
-        todo!()
+    pub fn snapshot(&self, project_id: &str) -> Option<(adit_core::Project, u64)> {
+        tools::snapshot(&self.inner, project_id)
     }
 
     /// One composited frame of a snapshot, RGBA at sequence size (the `render_frame` path without
     /// scaling or encoding).
     pub fn render(
         &self,
-        _project: &adit_core::Project,
-        _sequence_id: adit_core::Id,
-        _time: adit_core::Time,
+        project: &adit_core::Project,
+        sequence_id: adit_core::Id,
+        time: adit_core::Time,
     ) -> Result<adit_media::Frame, String> {
-        todo!()
+        tools::render_raw(&self.inner, project, sequence_id, time)
     }
 
     /// Sequence audio of a snapshot: interleaved stereo f32 at the sequence sample rate.
     pub fn mix(
         &self,
-        _project: &adit_core::Project,
-        _sequence_id: adit_core::Id,
-        _start: adit_core::Time,
-        _duration: adit_core::Time,
+        project: &adit_core::Project,
+        sequence_id: adit_core::Id,
+        start: adit_core::Time,
+        duration: adit_core::Time,
     ) -> Result<Vec<f32>, String> {
-        todo!()
+        tools::mix(&self.inner, project, sequence_id, start, duration)
     }
 
     /// A frame of a media file, for the Source monitor.
     pub fn source_frame(
         &self,
-        _path: &str,
-        _time: adit_core::Time,
+        path: &str,
+        time: adit_core::Time,
     ) -> Result<Arc<adit_media::Frame>, String> {
-        todo!()
+        tools::source_frame(&self.inner, path, time)
     }
 
     /// Attaches (or with `None` detaches) the window the `ui_*` tools talk to.
-    pub fn set_ui(&self, _ui: Option<Arc<dyn UiBridge>>) {
-        todo!()
+    pub fn set_ui(&self, ui: Option<Arc<dyn UiBridge>>) {
+        tools::set_ui(&self.inner, ui)
     }
 }

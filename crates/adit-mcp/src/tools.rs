@@ -2,12 +2,12 @@
 //! Every argument is untrusted: bad input is an `Err` message, never a panic.
 
 use crate::time::{convert_times, parse_fps, parse_time};
-use crate::{Image, ToolInfo, ToolOutput};
+use crate::{Image, ProjectInfo, ToolInfo, ToolOutput, UiBridge};
 use adit_core::{
     CLIP_PARAMS, ClipSource, Command, Document, EffectDef, EffectKind, FLICKS_PER_SECOND, Id,
     Media, MediaSpec, ParamDef, Project, Rational, Sequence, Time, time_to_frame,
 };
-use adit_media::{AudioCodec, ExportSettings, MediaBackend, VideoCodec};
+use adit_media::{AudioCodec, ExportSettings, Frame, MediaBackend, VideoCodec};
 use adit_render::{RenderError, Renderer};
 use image::RgbaImage;
 use serde_json::{Value, json};
@@ -34,6 +34,8 @@ pub struct Inner {
     cv: Condvar,
     /// Created on first use (GPU setup is slow); preview rendering shares it.
     renderer: Mutex<Option<Renderer>>,
+    /// The window the `ui_*` tools talk to.
+    ui: Mutex<Option<Arc<dyn UiBridge>>>,
 }
 
 #[derive(Default)]
@@ -49,6 +51,15 @@ struct Entry {
     doc: Document,
     path: Option<String>,
     dirty: bool,
+    /// Bumped by `Entry::changed` on every mutation of `doc`.
+    revision: u64,
+}
+
+impl Entry {
+    fn changed(&mut self) {
+        self.dirty = true;
+        self.revision += 1;
+    }
 }
 
 struct Request {
@@ -88,6 +99,7 @@ impl Inner {
             state: Mutex::new(State::default()),
             cv: Condvar::new(),
             renderer: Mutex::new(None),
+            ui: Mutex::new(None),
         }
     }
 }
@@ -278,6 +290,7 @@ fn project_new(i: &Arc<Inner>, a: A) -> R<ToolOutput> {
         doc,
         path: None,
         dirty: true,
+        revision: 0,
     });
     ok(json!({ "project_id": id, "sequence_id": out.created[0], "track_ids": &out.created[1..] }))
 }
@@ -297,6 +310,7 @@ fn project_open(i: &Arc<Inner>, a: A) -> R<ToolOutput> {
         doc: Document::new(project),
         path: Some(path),
         dirty: false,
+        revision: 0,
     });
     ok(json!({ "project_id": id }))
 }
@@ -482,7 +496,7 @@ fn media_import(i: &Arc<Inner>, a: A) -> R<ToolOutput> {
         .apply(Command::Batch { commands: cmds })
         .map_err(|e| e.to_string())?;
     if !specs.is_empty() {
-        e.dirty = true;
+        e.changed();
     }
     let media: Vec<Value> = out
         .created
@@ -801,7 +815,9 @@ fn edit(i: &Arc<Inner>, a: A) -> R<ToolOutput> {
     e.doc
         .apply(Command::Batch { commands: parsed })
         .map_err(|e| e.to_string())?;
-    e.dirty |= e.doc.undo_depth() != before;
+    if e.doc.undo_depth() != before {
+        e.changed();
+    }
     ok(json!({ "created": created, "undo_depth": e.doc.undo_depth() }))
 }
 
@@ -813,7 +829,9 @@ fn step(i: &Arc<Inner>, a: A, undo: bool) -> R<ToolOutput> {
     while done < steps && (if undo { e.doc.undo() } else { e.doc.redo() }) {
         done += 1;
     }
-    e.dirty |= done > 0;
+    if done > 0 {
+        e.changed();
+    }
     ok(json!({ "done": done, "undo_depth": e.doc.undo_depth(), "redo_depth": e.doc.redo_depth() }))
 }
 
@@ -877,16 +895,19 @@ fn effect_check(_: &Arc<Inner>, a: A) -> R<ToolOutput> {
 
 // -------------------------------------------------------------------------------------- seeing
 
-fn render(i: &Inner, p: &Project, seq: Id, t: Time) -> R<RgbaImage> {
+pub fn render_raw(i: &Inner, p: &Project, seq: Id, t: Time) -> R<Frame> {
     let mut g = lock(&i.renderer);
     if g.is_none() {
         *g = Some(Renderer::new().map_err(|e| e.to_string())?);
     }
-    let f = g
-        .as_mut()
+    g.as_mut()
         .expect("just set")
         .render_frame(p, seq, t, &*i.media)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())
+}
+
+fn render(i: &Inner, p: &Project, seq: Id, t: Time) -> R<RgbaImage> {
+    let f = render_raw(i, p, seq, t)?;
     RgbaImage::from_raw(f.width, f.height, f.rgba)
         .ok_or_else(|| "the renderer returned a malformed frame".into())
 }
@@ -1326,6 +1347,107 @@ fn request_complete(i: &Arc<Inner>, a: A) -> R<ToolOutput> {
     ok(json!({ "request_id": id }))
 }
 
+// ------------------------------------------------------------------------- in-process access
+
+pub fn projects(i: &Inner) -> Vec<ProjectInfo> {
+    lock(&i.state)
+        .projects
+        .iter()
+        .map(|e| ProjectInfo {
+            id: e.id.clone(),
+            name: e.doc.project().name.clone(),
+            path: e.path.clone(),
+            dirty: e.dirty,
+            revision: e.revision,
+        })
+        .collect()
+}
+
+pub fn revision(i: &Inner, id: &str) -> Option<u64> {
+    lock(&i.state)
+        .projects
+        .iter()
+        .find(|e| e.id == id)
+        .map(|e| e.revision)
+}
+
+pub fn snapshot(i: &Inner, id: &str) -> Option<(Project, u64)> {
+    let st = lock(&i.state);
+    let e = st.projects.iter().find(|e| e.id == id)?;
+    Some((e.doc.project().clone(), e.revision))
+}
+
+pub fn mix(i: &Inner, p: &Project, seq: Id, start: Time, duration: Time) -> R<Vec<f32>> {
+    adit_render::mix_audio(p, seq, start, duration, &*i.media).map_err(|e| e.to_string())
+}
+
+pub fn source_frame(i: &Inner, path: &str, t: Time) -> R<Arc<Frame>> {
+    i.media.video_frame(path, t).map_err(|e| e.to_string())
+}
+
+pub fn set_ui(i: &Inner, ui: Option<Arc<dyn UiBridge>>) {
+    *lock(&i.ui) = ui;
+}
+
+// ------------------------------------------------------------------------------------------ ui
+
+/// The attached window. The lock is released before the caller uses it: the window calls back into
+/// the session.
+fn bridge(i: &Inner) -> R<Arc<dyn UiBridge>> {
+    lock(&i.ui)
+        .clone()
+        .ok_or_else(|| "no window is attached to this session".to_string())
+}
+
+fn ui_screenshot(i: &Arc<Inner>, _: A) -> R<ToolOutput> {
+    Ok(ToolOutput {
+        json: json!({}),
+        images: vec![bridge(i)?.screenshot()?],
+    })
+}
+
+fn ui_get(i: &Arc<Inner>, _: A) -> R<ToolOutput> {
+    ok(bridge(i)?.get()?)
+}
+
+/// Frame rate for frame strings: the sequence the window shows (of `project_id` if the call names
+/// one, else the window's project); `None` when it cannot be found.
+fn window_fps(i: &Inner, ui: &dyn UiBridge, a: A) -> Option<Rational> {
+    let at = ui.get().ok()?;
+    let pid = match a.opt_str("project_id") {
+        Ok(Some(p)) => p.to_string(),
+        _ => at.get("project_id")?.as_str()?.to_string(),
+    };
+    let mut st = lock(&i.state);
+    let p = entry(&mut st, &pid).ok()?.doc.project();
+    let window_seq = (at.get("project_id")?.as_str() == Some(&pid))
+        .then(|| at.get("sequence_id")?.as_u64())
+        .flatten();
+    window_seq
+        .and_then(|id| p.sequence(id))
+        .or(p.sequences.first())
+        .map(|s| s.fps)
+}
+
+fn ui_set(i: &Arc<Inner>, a: A) -> R<ToolOutput> {
+    let ui = bridge(i)?;
+    let mut state = a.0.clone();
+    let times = ["playhead", "mark_in", "mark_out"];
+    // Only frame strings need the frame rate; asking the window for it is not free.
+    let fps = if times.iter().any(|k| a.get(k).is_some_and(Value::is_string)) {
+        window_fps(i, &*ui, a)
+    } else {
+        None
+    };
+    for k in times {
+        if let Some(v) = a.get(k) {
+            state[k] = Value::from(parse_time(k, v, fps)?);
+        }
+    }
+    ui.set(&state)?;
+    ok(json!({}))
+}
+
 // ------------------------------------------------------------------------------------------ table
 
 type Run = fn(&Arc<Inner>, A) -> R<ToolOutput>;
@@ -1635,6 +1757,35 @@ static TOOLS: &[Tool] = &[
             ("message", "string", "What you did; default empty."),
         ],
         run: request_complete,
+    },
+    Tool {
+        name: "ui_screenshot",
+        description: "Screenshot of the editor window as a PNG image. Errors when no window is attached (headless server).",
+        props: &[],
+        run: ui_screenshot,
+    },
+    Tool {
+        name: "ui_get",
+        description: "State of the editor window: {project_id, sequence_id, playhead, playhead_s, selection, mark_in, mark_out, tool, playing}; times in flicks. Errors when no window is attached.",
+        props: &[],
+        run: ui_get,
+    },
+    Tool {
+        name: "ui_set",
+        description: "Change the editor window's state; give any of the fields. Frame strings (\"45f\") use the frame rate of the window's current sequence (or of project_id's). Errors when no window is attached.",
+        props: &[
+            ("project_id", "string", "Switch the window to this project."),
+            ("playhead", "time", "Playhead position."),
+            ("selection", "integers", "Selected clip ids."),
+            ("mark_in", "time", "In point."),
+            ("mark_out", "time", "Out point."),
+            (
+                "tool",
+                "string",
+                "Tool name in lower snake case: select, razor, ripple, ...",
+            ),
+        ],
+        run: ui_set,
     },
 ];
 
