@@ -1,0 +1,9 @@
+[package]
+name = "adit-render"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+adit-core = { path = "../adit-core" }
+adit-media = { path = "../adit-media" }
+thiserror.workspace = true

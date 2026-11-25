@@ -231,3 +231,211 @@ zero). Types and signatures: `crates/adit-core/src/{model,command,document,error
 - **C-BATCH-1** Commands run in order against the evolving project. The first `Err` fails the whole batch
   with that error (G1). On success: one undo entry, `created` = concatenation in order. Nested batches
   are allowed. An empty batch is `Ok` and changes nothing.
+
+# Part 2 — adit-media
+
+API: `crates/adit-media/src/lib.rs`. ffmpeg and ffprobe run as subprocesses; nothing links against them.
+
+- **M-PROBE-1** `Ffmpeg::probe` returns `name` = file name without directory, `path` = the path given,
+  `duration` in flicks (container duration, within one frame of the true length), `video` (coded size
+  after rotation is *not* applied; `fps` = the stream's average frame rate as an exact rational, e.g.
+  30000/1001), `audio` (sample rate, channel count). A file with only audio has `video: None` and vice
+  versa.
+- **M-PROBE-2** A still image (png, jpg, ...) probes as `duration: None`, `video: Some` with
+  `fps` 25/1, `audio: None`.
+- **M-PROBE-3** A missing file → `MediaError::NotFound`. A file ffprobe cannot read (e.g. a text file)
+  → `MediaError::Ffmpeg` or `Unsupported`. Neither panics. `video_frame` and `audio` on a missing
+  file also return `NotFound`; the detect functions return some `Err`.
+- **M-FRAME-1** `video_frame(path, t)` returns frame `n = time_to_frame(t, fps)` of the file, decoded to
+  RGBA8 at the stream's size. It must be the exact frame: for a constant-frame-rate file, asking for the
+  start time of frame `n` returns frame `n`, never `n-1` or `n+1`, for sequential access, backwards
+  access and random access alike.
+- **M-FRAME-2** `t < 0` returns frame 0; `t >=` duration returns the last frame. Stills return the image
+  for every `t`.
+- **M-FRAME-3** Sequential forward reads (frame n, n+1, n+2, ...) must not start a new ffmpeg process
+  per frame: reading 60 consecutive frames of a 64x64 clip takes well under the time of 60 process
+  launches (test bound: < 5 s on any machine). Frames are cached (LRU bounded by bytes, default 512 MB);
+  asking for the same frame twice returns the same `Arc`.
+- **M-FRAME-4** Alpha: sources without alpha decode with `a = 255`. A PNG with transparency keeps its
+  alpha (straight, not premultiplied).
+- **M-AUDIO-1** `audio(path, start, duration, sr, "")` returns interleaved stereo f32 resampled to `sr`,
+  mono sources duplicated to both channels, length `2 * round(duration * sr / s)` samples within ±2
+  frames, covering source range `[start, start + duration)`. A range past the end of the file yields
+  fewer samples (possibly none), not an error.
+- **M-AUDIO-2** `filter` is passed to ffmpeg `-af` after the range is cut. `"volume=0.5"` halves the
+  samples; `"atempo=2.0"` halves the length (within 3%: ffmpeg pads). An invalid filter → `MediaError::Ffmpeg`.
+- **M-AUDIO-3** A file without audio → `Ok(vec![])`.
+- **M-PAT** `Pattern { width, height, fps, duration }`: `probe` returns `name` = `path`, the given
+  `duration`, `video` with the given size/fps, `audio` 48000 Hz stereo. `video_frame(_, t)`: with
+  `n = time_to_frame(max(t, 0), fps)`, pixel `(x, y)` = `(x % 256, y % 256, n % 256, 255)`.
+  `audio(_, _, duration, sr, _)`: `round(duration * sr / s)` frames, every left sample `0.5`, every right
+  sample `0.25`; `filter` is ignored.
+- **M-ENC-1** `Encoder` writes a file that ffprobe reads back with the requested size, frame rate,
+  exactly as many video frames as `write_frame` was called, and (if audio was given and the codec is not
+  `None`) one audio stream at `sample_rate`. `H264` output is `yuv420p` so ordinary players open it; odd
+  width or height → `MediaError::Unsupported`.
+- **M-ENC-2** Decoding frame `k` of an encoded file returns the picture given to the `k`-th
+  `write_frame` (lossy: mean absolute error per channel < 8 for flat colours at `crf: Some(10)`).
+- **M-ENC-3** A `write_frame` with the wrong buffer length → `MediaError::Io` without writing. If ffmpeg
+  dies, `write_frame` / `finish` return `Err` carrying the tail of ffmpeg's stderr; nothing panics or
+  hangs. Dropping an `Encoder` without `finish` kills the ffmpeg process.
+- **M-ENC-4** With `audio: Some` the soundtrack length is not allowed to cut the video short: the file
+  has all written video frames even when the audio is shorter.
+- **M-DET-1** `detect_silence` on a file that is 1 s tone, 1 s silence, 1 s tone (noise −30 dB,
+  min 0.5 s) returns one range within 0.1 s of `[1s, 2s)`. `detect_scenes` on a file that switches from
+  flat red to flat blue at 1 s returns one time within one frame of 1 s. No silence / no cut → empty.
+- **M-PROC-1** Paths with spaces and non-ASCII characters work. No shell is involved: arguments are
+  passed as an argv array. ffmpeg's stderr is always drained so a full pipe cannot deadlock.
+
+# Part 3 — adit-render
+
+API: `crates/adit-render/src/lib.rs`. All colour math is done on sRGB-encoded values in 0..1 as they
+are (no linearisation), with straight alpha. GPU textures are `Rgba8Unorm`-style (no automatic sRGB
+conversion). Pixel tests allow ±2 per 8-bit channel.
+
+## Video
+
+- **V-1 Canvas.** `render_frame` returns a frame of the sequence's `width` x `height`. The canvas starts
+  opaque black `(0,0,0,1)`. A nested sequence renders onto a transparent canvas `(0,0,0,0)` of its own
+  size.
+- **V-2 Layers.** Video tracks are drawn in `tracks` order (index 0 first, higher on top). `hidden`
+  tracks and clips with `enabled: false` are skipped. Audio tracks draw nothing. On each track the clip
+  whose range contains `time` is drawn (plus transitions, V-9).
+- **V-3 Source image** of a clip at `time`:
+  `Media` → `media.video_frame(path, clip.source_time(time))` at the media's own size (no auto-fit);
+  `Solid` → sequence-sized, filled with `color`;
+  `Text` → sequence-sized transparent image with the text drawn in `color` at `size` px; the text
+  block's bounding box is centred on the image; `align` positions lines within the block; `\n` breaks
+  lines;
+  `Sequence` → the nested sequence rendered at `clip.source_time(time)` at its own size (V-1);
+  `Adjustment` → see V-8.
+  A media clip whose file cannot be read renders as transparent rather than failing the frame:
+  `render_frame` only returns `Err` for a missing sequence, a GPU failure, or an unknown/invalid effect.
+- **V-4 Effects.** The clip's enabled effects run in order, each mapping the image to a new image of the
+  same size (E-*). An effect name that is neither built-in nor in `project.effects` →
+  `RenderError::UnknownEffect`.
+- **V-5 Crop.** `crop_left/top/right/bottom` (fractions of the image, 0..1) make those margins
+  transparent.
+- **V-6 Transform.** The image (w x h) is placed on a transparent canvas-sized layer: with no transform
+  its centre sits on the canvas centre at 1:1 pixel scale. `position_x/y` move it in canvas pixels
+  (x right, y down). `scale_x/y` scale it and `rotation` rotates it clockwise in degrees, both about the
+  anchor point, which is the image centre offset by `anchor_x/y` image pixels. Sampling is bilinear;
+  outside the image is transparent. Parameters are evaluated at `local = time - clip.start` (Q5).
+- **V-7 Opacity and blend.** Layer alpha is multiplied by `opacity`. The layer `s` (alpha `sa`) is
+  composited over the canvas `d` (alpha `da`) per pixel:
+  `B` = blend function; `s' = (1 - da) * s + da * B(d, s)`; `out.a = sa + da * (1 - sa)`;
+  `out.rgb = (sa * s' + (1 - sa) * da * d) / out.a` (0 when `out.a = 0`).
+  `B`: Normal `s`; Add `min(1, d + s)`; Multiply `d * s`; Screen `1 - (1-d)(1-s)`; Overlay
+  `d < 0.5 ? 2ds : 1 - 2(1-d)(1-s)`; Darken `min(d, s)`; Lighten `max(d, s)`; Difference `|d - s|`.
+  Examples on the black canvas: white solid at opacity 0.5 → `(128,128,128)`; red solid `(1,0,0,1)` under
+  a `(0,0,1,1)` solid with blend Add → `(255,0,255)`; `(0.5,0.5,0.5,1)` under `(0.5,0.5,0.5,1)` Multiply
+  → `(64,64,64)`.
+- **V-8 Adjustment clip.** Its source image is the canvas as composited so far (tracks below). Its
+  effects run on that; the result replaces the canvas mixed by `opacity`
+  (`canvas = mix(canvas, result, opacity)`). Transform, crop and blend are ignored.
+- **V-9 Transitions.** Window of a transition on a track: two-sided → `[cut - duration/2, cut -
+  duration/2 + duration)` with `cut = left.end`; `left` only → `[left.end - duration, left.end)`;
+  `right` only → `[right.start, right.start + duration)`. When `time` is in a window,
+  `progress = (time - window_start) / duration`, and the track contributes one layer: the transition
+  shader applied to `A` = the left clip's layer and `B` = the right clip's layer (each after effects,
+  crop, transform, opacity; canvas-sized; a missing side is fully transparent), composited with blend
+  Normal. A clip is sampled outside its own range when needed (`source_time` continues past the edit;
+  media time clamps to the file).
+  Built-in transitions, with `p = progress`, on premultiplied values then un-premultiplied:
+  `cross_dissolve` → `A (1-p) + B p`;
+  `dip_to_black` → `p < 0.5`: `mix(A, black, 2p)`, else `mix(black, B, 2p - 1)` (black = opaque);
+  `wipe` → `B` where `uv.x < p`, else `A`;
+  `push` → `uv.x < 1 - p`: `A` at `(uv.x + p, uv.y)`, else `B` at `(uv.x - (1 - p), uv.y)`.
+  Example: red solid `[0,2s)`, blue solid `[2s,4s)`, 1 s `cross_dissolve`: at 2 s → `(128,0,128)`;
+  at 1.75 s → `(191,0,64)`; at 1.4 s → pure red.
+- **V-10 Determinism.** Rendering the same project and time twice gives identical frames. Rendering does
+  not modify the project.
+
+## Effects
+
+- **E-1 Shader contract.** An `EffectDef` of kind `Filter` supplies WGSL containing
+  `fn effect(uv: vec2f) -> vec4f`; kind `Transition` supplies `fn transition(uv: vec2f) -> vec4f`.
+  `uv` is 0..1 with the origin at the top-left. Values are straight-alpha RGBA. adit prepends:
+  - `fn src(uv: vec2f) -> vec4f` — the input image (filters), bilinear, transparent outside 0..1;
+  - `fn src_a(uv: vec2f) -> vec4f`, `fn src_b(uv: vec2f) -> vec4f` — the two layers (transitions);
+  - `ctx.size: vec2f` (image size in pixels), `ctx.time: f32` (seconds since clip start),
+    `ctx.duration: f32` (clip or transition length in seconds), `ctx.progress: f32`
+    (`time / duration`, 0..1), `ctx.frame: f32` (sequence frame number);
+  - `p.<name>: f32` for every declared parameter, in declaration order.
+  The user code may define helper functions and constants. It must not declare bindings or entry points.
+- **E-2 Parameters.** Instance params are evaluated at `local` time (keyframes animate them); a
+  parameter missing on the instance takes the `ParamDef.default`. Parameter names must be WGSL
+  identifiers, unique, at most 64 per effect.
+- **E-3 Lookup.** `project.effects` is searched first, then built-ins (a project definition can shadow a
+  built-in). Kind must match the use (filter on a clip, transition on a cut) else `UnknownEffect`.
+- **E-4 Validation.** `validate_effect` builds the full shader exactly as the renderer does and checks
+  it with naga (parse + validate). Invalid WGSL, a missing/wrongly-typed `effect`/`transition`
+  function, bad parameter names → `Err(message)` naming the problem. It never panics, whatever the
+  input. A definition that passes `validate_effect` renders without `RenderError::Shader`.
+- **E-5 Runtime effect example.** A filter `fn effect(uv: vec2f) -> vec4f { let c = src(uv);
+  return vec4f(c.b, c.g, c.r, c.a) * vec4f(p.gain, p.gain, p.gain, 1.0); }` with param `gain` default 1
+  turns a `(1, 0.5, 0, 1)` solid into `(0, 128, 255)`, and with `gain = 0.5` into `(0, 64, 128)`.
+- **E-BUILTIN** `builtin_effects()` returns at least these, written against E-1 like any user effect.
+  Filters with exact formulas (`c` = rgb, alpha unchanged unless stated; results clamp to 0..1):
+  - `exposure {stops: 0}`: `c * 2^stops`
+  - `brightness_contrast {brightness: 0, contrast: 1}`: `(c - 0.5) * contrast + 0.5 + brightness`
+  - `saturation {amount: 1}`: `mix(vec3(l), c, amount)`, `l = dot(c, (0.2126, 0.7152, 0.0722))`
+  - `temperature {temp: 0, tint: 0}`: `r += 0.1 temp`, `b -= 0.1 temp`, `g += 0.1 tint`
+  - `levels {in_black: 0, in_white: 1, gamma: 1, out_black: 0, out_white: 1}`:
+    `pow(clamp((c - in_black) / (in_white - in_black), 0, 1), 1 / gamma) * (out_white - out_black) + out_black`
+  - `lift_gamma_gain {lift_r,g,b: 0, gamma_r,g,b: 1, gain_r,g,b: 1}`:
+    `pow(clamp(c * gain + lift, 0, 1), 1 / gamma)` per channel
+  - `invert {amount: 1}`: `mix(c, 1 - c, amount)`
+  - `tint {r: 1, g: 1, b: 1, amount: 1}`: `mix(c, c * (r, g, b), amount)`
+  - `hue_rotate {degrees: 0}`: rotation of `c` about the grey axis (0 = identity; 120 maps pure red to
+    pure green within tolerance 6)
+  - `flip {horizontal: 0, vertical: 0}`: mirrors when the value is `> 0.5`
+  - `rect {x: 0.25, y: 0.25, w: 0.5, h: 0.5, r: 1, g: 1, b: 1, a: 1}`: draws that colour over the input
+    where `x <= uv.x < x + w` and `y <= uv.y < y + h` (normal alpha-over)
+  - `ellipse {cx: 0.5, cy: 0.5, rx: 0.25, ry: 0.25, r, g, b, a}`: same for the ellipse
+  - `linear_gradient {r0,g0,b0,a0, r1,g1,b1,a1, angle: 0}`: replaces the image; angle 0 = left to right
+  Filters checked only for plausibility (changes the picture, no error, identity at the neutral value):
+  `gaussian_blur {radius: 4}` (pixels; 0 = identity), `sharpen {amount: 0}`, `vignette {amount: 0.5,
+  radius: 0.75}`, `pixelate {size: 8}` (1 = identity), `chroma_key {r: 0, g: 1, b: 0, threshold: 0.3,
+  softness: 0.1}` (pure key colour → alpha 0), `drop_shadow {dx: 4, dy: 4, blur: 4, opacity: 0.5}`,
+  `stroke {width: 2, r: 0, g: 0, b: 0, a: 1}`, `noise {amount: 0.1, seed: 0}`.
+  Transitions: `cross_dissolve`, `dip_to_black`, `wipe`, `push` (V-9).
+  Every built-in passes `validate_effect`. Names are unique.
+
+## Audio
+
+- **A-1** `mix_audio` returns exactly `2 * round(duration * sample_rate / s)` samples (interleaved L, R).
+  Empty space is silence. Only audio tracks contribute. Muted tracks are skipped; if any audio track has
+  `solo`, only solo tracks play. Disabled clips are skipped.
+- **A-2** A `Media` clip plays the source range starting at `source_in`, of length
+  `round(duration * speed)`, fetched with `MediaBackend::audio` at the sequence sample rate with the
+  filter chain: `areverse` if `reverse`; then `atempo=<speed>` if `speed != 1` (chained in steps within
+  ffmpeg's accepted range when needed); then the clip's `audio_filter`; joined with commas. The result
+  is cut or zero-padded to the clip's length.
+- **A-3** Gain: `volume` is in dB, gain `10^(volume / 20)`; `pan` in −1..1 with left gain
+  `min(1, 1 - pan)` and right gain `min(1, 1 + pan)`. Both are evaluated per sample frame at its local
+  time, so keyframes fade smoothly. With `Pattern` audio (L 0.5, R 0.25): volume −6.0206 dB → L 0.25,
+  R 0.125; pan 1 → L 0, R 0.25.
+- **A-4** Tracks sum. Two overlapping `Pattern` clips on two tracks → L 1.0, R 0.5. No limiter.
+- **A-5** Transitions on audio tracks: any effect name means an equal-power crossfade over the V-9
+  window: left clip gain `cos(p * π/2)`, right clip gain `sin(p * π/2)`; a missing side is silence
+  (fade in / fade out). Clips are sampled outside their own range when the window needs it.
+- **A-6** A `Sequence` clip on an audio track plays the nested sequence's mix from
+  `source_in` (speed and reverse ignored for nested audio; `shortcut`).
+- **A-7** A clip whose audio cannot be fetched contributes silence; `mix_audio` fails only for a missing
+  sequence.
+
+## Export
+
+- **X-1** `export` writes `N` frames where `N` = number of frames `n >= 0` with
+  `frame_to_time(n, settings.fps) < sequence.duration()`; frame `n` is `render_frame` at
+  `frame_to_time(n, settings.fps)`, scaled to `settings.width` x `height` if those differ from the
+  sequence (bilinear). The soundtrack is `mix_audio(0, sequence.duration())` resampled if
+  `settings.sample_rate` differs. `AudioCodec::None` or a sequence without audio tracks → no audio
+  stream.
+- **X-2** `progress` is called after every frame with `(done, N)`, ending with `(N, N)`. `cancel` set →
+  stops within one frame, returns `Cancelled`, and removes the partial file.
+- **X-3** An empty sequence (duration 0) → `Err` (nothing to export), no file left behind.
+- **X-4** End to end: a 1 s, 30 fps, 64x64 sequence with a red solid `[0, 0.5s)` and a blue solid
+  `[0.5s, 1s)` exported as H264 probes as 30 frames, 64x64, 30 fps; decoded frame 5 is red and frame 20
+  is blue (±12 per channel).
