@@ -92,6 +92,121 @@ Window:
   sequence that was current before the call, also when the same call switches `sequence_id`.
   The offline check covers media with video only.
 
+## Editing comfort (U-ED-*)
+
+New public items in `crates/adit-gui/src/lib.rs`:
+
+```rust
+pub struct ClipboardItem { pub track_id: Id, pub clip: adit_core::Clip }   // Debug, Clone, PartialEq
+// Action gains: Copy, Cut, Paste, Unlink, SetLabel(u8), CloseGap { track_id: Id, time: Time }
+// Op gains: Copy, Paste
+pub fn copy(project: &Project, ui: &UiState) -> Vec<ClipboardItem>;
+pub fn paste(items: &[ClipboardItem], project: &Project, ui: &mut UiState) -> Vec<Op>;
+pub fn transition_at(project: &Project, sequence_id: Id, track_id: Id, time: Time, effect: &str) -> Vec<Op>;
+pub fn snap_delta(delta: Time, clips: &[Id], project: &Project, ui: &UiState, tolerance: Time) -> Time;
+pub fn preview(drag: Drag, project: &Project, ui: &UiState) -> Option<Project>;
+pub enum MenuItem { Do(Action), Labels, Transitions }                      // Debug, Clone, PartialEq
+pub fn context_menu(hit: Hit, has_clipboard: bool, project: &Project, ui: &mut UiState) -> Vec<MenuItem>;
+// impl App: pub fn ai_import(&mut self, paths: Vec<String>);
+```
+
+Logic (pure, same guarantees as `perform`: never panics, missing sequence → nothing):
+
+- **U-ED-1 Copy, Cut.** `copy` = the effective selection as `(track_id, clip)`, in track order (index in
+  `tracks` ascending) then by start. `perform(Copy)` → `[Op::Copy]`, or no op when the effective
+  selection is empty. `perform(Cut)` → `[Op::Copy, Op::Edit(..)]` where the edit and the `ui` change
+  are those of `Delete` (U-DEL); empty → no op. `perform(Paste)` → `[Op::Paste]` always.
+  Keys (added to U-KEYS): `^C` Copy, `^X` Cut, `^V` Paste.
+- **U-ED-2 Paste.** `paste`: `base` = smallest `clip.start` of `items`, `span` = largest clip end −
+  `base`. Items whose track is not in the current sequence or is locked are left out; none left (or
+  `items` empty) → no op, `ui` unchanged. Else one `Op::Edit([PasteClips { items, mode: overwrite }])`
+  with each kept clip's `start` = `playhead + (clip.start - base)`, in the order given. Afterwards
+  playhead = `at(frame(playhead + span))`, selection emptied.
+- **U-ED-3 Unlink.** `Unlink`: `UnlinkClips { clip_ids }` naming the effective-selection clips that have
+  `link: Some(_)` (track order, then start); none → no op. Selection unchanged.
+- **U-ED-4 Label.** `SetLabel(n)`: one `SetClip { clip_id, label: Some(n) }` (every other field `None`)
+  per effective-selection clip (track order, then start), one batch. `n > 8` or empty → no op.
+- **U-ED-5 Close gap.** `CloseGap { track_id, time }` → `Op::Edit([Command::CloseGap { track_id, time
+  }])` when the track is in the sequence and unlocked, `time` is inside no clip of it
+  (`start <= time < end`), and a clip of it starts after `time`. Otherwise no op.
+- **U-ED-6 Transition at a point.** `transition_at`: track not in the sequence, or locked → no op.
+  If a clip `C` of the track has `start <= time < end`: the edge is the start when
+  `time - C.start < C.end - time`, else the end. End edge: with a clip `N` on the track starting at
+  `C.end` → `AddTransition { track_id, left: C, right: N, effect, duration: min(1 s, 2 * C.duration,
+  2 * N.duration), params: {} }`; without → `left: C` only, `duration: min(1 s, C.duration)`.
+  Start edge: mirrored with a clip `P` ending at `C.start` (`left: P, right: C`), else `right: C`
+  only. If `time` is in a gap: `L` = last clip ending at or before `time`, `R` = first clip starting
+  after it; both must exist, else no op; → one `Op::Edit([CloseGap { track_id, time }, AddTransition
+  { track_id, left: L, right: R, effect, duration: min(1 s, 2 * L.duration, 2 * R.duration) }])`.
+- **U-ED-7 Snap for moves.** `snap_delta`: `clips` are the moving clips (unknown ids ignored). With
+  `ui.snap` off, or no candidate in range → `delta` rounded to the nearest multiple of `F`
+  (`at(round)` of `|delta|`, sign kept). With it on: candidates as U-SNAP excluding `clips`; for
+  every moving clip both `start + delta` and `end + delta` are compared with every candidate; the
+  pair with the smallest distance `<= tolerance` wins (ties → the smaller resulting delta) and the
+  result is `delta + (candidate - edge)`. Example: clip `[2s, 4s)` moving, other clip `[5s, 8s)`,
+  tolerance 0.1 s, `delta` 0.95 s → 1 s (its end lands on 5 s).
+- **U-ED-8 Preview.** `preview` runs `drag` on copies and applies its `Op::Edit` batches to a copy of
+  the project: `Some(result)` when there is at least one edit and the core accepts all of them, else
+  `None`. Neither `project` nor `ui` changes.
+- **U-ED-9 Context menu.** `context_menu` on a `Clip` hit: if the clip is not in the effective
+  selection, selection = `[clip]` first. Items in this order: `Do(Cut)`, `Do(Copy)`, `Do(Paste)` (only
+  with `has_clipboard`), `Do(Delete)`, `Do(RippleDelete)`, `Do(Unlink)` (only if an
+  effective-selection clip has a link), `Do(Group)` (only with at least 2 clips in `ui.selection`),
+  `Do(Ungroup)` (only if an effective-selection clip has a group), `Do(ToggleEnable)`,
+  `Do(SpeedDialog)`, `Do(GainDialog)`, `Labels`, `Transitions`, `Do(WandPrompt)`.
+  On an `Empty` hit (selection unchanged): `Do(Paste)` (only with `has_clipboard`),
+  `Do(CloseGap { track_id, time })` (only if U-ED-5 gives an op), `Transitions` (only if U-ED-6 gives
+  an op for that track and time), `Do(WandPrompt)`. Any other hit → empty, `ui` unchanged.
+
+Window:
+
+- **U-ED-10 Right click.** A right click on the timeline opens a menu built from `context_menu` (hit
+  time rounded to a frame, not snapped). Button texts: `Cut`, `Copy`, `Paste`, `Delete`,
+  `Ripple Delete` (also for `CloseGap`), `Ungroup Audio/Video` (Unlink), `Group`, `Ungroup Clips`,
+  `Enable/Disable`, `Speed...`, `Audio Gain...`, `Ask AI...`; submenu `Label` with `None`, `Violet`,
+  `Iris`, `Caribbean`, `Lavender`, `Cerulean`, `Forest`, `Rose`, `Mango` (→ `SetLabel(0..=8)`);
+  submenu `Add Transition` listing the transition effects of `effect_list` on a video track and
+  `crossfade` on an audio track (→ `transition_at` with the hit track and time). `Op::Copy` stores
+  `copy(..)` in a clipboard shared by all tabs; `Op::Paste` runs `paste` with it. The egui
+  copy / cut / paste events act as `^C` / `^X` / `^V` when no text field has focus.
+- **U-ED-11 Tool bar.** Each tool button shows an icon, not text. Its accessible label is the tool
+  name: `Selection`, `Track Select`, `Ripple Edit`, `Rolling Edit`, `Rate Stretch`, `Razor`, `Slip`,
+  `Slide`, `Pen`, `Hand`, `Zoom`, `Type`, `Magic Wand`. Hovering shows the name with its key and one
+  sentence saying what the tool does.
+- **U-ED-12 Snapping.** The Timeline header has a toggle button `Snap` (selected when on) that runs
+  `ToggleSnap`. A `Select` body drag uses `snap_delta` over the moving clips (not the pointer snap of
+  U-FIX-4), so a clip's start or end lands on the candidate; while a drag is snapped a vertical line
+  is drawn at the candidate. `ui_get` reports `snap`; `ui_set { snap: bool }` sets it.
+- **U-ED-13 Live result.** While a gesture is dragged the timeline draws the clips of `preview(..)`
+  instead of the current ones, so clips that would be cut, overwritten or left with a gap show it
+  before release; ranges that held a clip before and hold none or another one afterwards are tinted
+  red. With `None` the outline of U-APP-4 is drawn.
+- **U-ED-14 Timeline looks.** A transition is a box over its time range at the top of the row with a
+  diagonal and, when at least 60 px wide, its effect name. A clip with `label != 0` is filled with
+  that label's colour. Audio clips of media draw the waveform of S-4 for their source range
+  (following `source_in`, `speed`, `reverse`), computed off the UI thread.
+- **U-ED-15 Uniform scale.** Effect Controls has a checkbox `Uniform Scale`, checked by default. While
+  checked, an edit of Scale X or Scale Y sets both params to the new value in one batch (one undo
+  step), and their keyframe toggle acts on both.
+- **U-ED-16 File drop.** Files dropped on the window are imported with one `media_import`. If the
+  pointer is over a timeline track, the imported media are also placed there as a bin drop
+  (U-APP-4), the first at the pointer time and each next one where the previous ends. Errors go to
+  the status bar.
+- **U-ED-17 Preview resolution.** The Program monitor has a selector showing `Full`, `1/2` or `1/4`
+  (default `1/2`); the picture is rendered with `Session::render_scaled` (S-5) at that divisor.
+  `ui_get` reports `preview_scale` (1, 2 or 4); `ui_set { preview_scale }` sets it (other → `Err`).
+- **U-ED-18 Wand anywhere.** With tool `Wand`, a click or dragged rectangle on any panel other than
+  the Timeline, the Program monitor, the tool bar, the menu bar and the project tabs opens the wand
+  prompt for the app: it names the panel, and `Send` calls `request_create { scope: "app", panel,
+  rect (0..1 of the window, omitted for a click), text, project_id, sequence_id }`. `Edit > Ask AI to
+  Change adit...` opens the same prompt without a panel. The Requests panel shows the scope.
+- **U-ED-19 AI import.** `File > AI Import...` and `AI Import...` in the Project panel's right-click
+  menu ask for files and then call `App::ai_import(paths)`, which opens a dialog listing the files
+  with a text field labelled `Instructions` and a button `Send`; `Send` calls `request_create
+  { scope: "import", paths, text, project_id, sequence_id }`. Nothing is imported by the window.
+- **U-ED-20 Library.** The Effects browser lists library effects (T-LIB-3) marked as such; applying
+  one works like any other effect.
+
 ## Session additions (`adit_mcp::Session`)
 
 - **S-1** `projects()` lists open projects in opening order with `revision`. `revision(id)` grows by
@@ -106,6 +221,15 @@ Window:
   an error result saying no window is attached. They are listed by `tools/list` always. Time fields of
   `ui_set` (`playhead`, `mark_in`, `mark_out`) accept T-4 strings, with frame strings using the fps of
   the window's current sequence.
+
+- **S-4** `waveform(path)` → `Result<Arc<Vec<f32>>, String>`: peaks of the file's audio, 50 per second.
+  Peak `i` is the largest `|sample|` of either channel in `[i / 50 s, (i + 1) / 50 s)`; a last
+  partial bucket counts. Computed once per path from `MediaBackend::audio` (whole file, no filter)
+  and cached; media without audio or a failing backend → `Err`. `Pattern` (10 s) gives 500 peaks of
+  0.5.
+- **S-5** `render_scaled(project, sequence_id, time, divisor: u32)` → `Result<Frame, String>`: the
+  frame of `render` scaled (bilinear) to `ceil(width / divisor)` x `ceil(height / divisor)`;
+  `divisor` 1 equals `render`; a divisor other than 1, 2, 4 → `Err`.
 
 ## Binary
 

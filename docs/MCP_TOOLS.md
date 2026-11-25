@@ -143,12 +143,48 @@ can too.
   { request_id, message?="" }` marks it `done` with the message (shown to the user in the GUI).
   Unknown id → error.
 
+- **T-REQ-4** `request_create` also takes `scope?="edit"` (`"edit"`: change the project; `"app"`: the
+  user wants adit itself changed; `"import"`: bring the files in `paths` into the project as `text`
+  says; any other value → error), `panel?` (name of the window panel pointed at) and `paths?=[]`
+  (strings). With `scope: "app"`, `rect` is in 0..1 of the window. `request_wait` and `request_list`
+  give `scope`, `panel` (`null` when absent) and `paths` for every request, and for `scope: "app"`
+  also `source_dir`: the adit source tree this binary was built from if it still exists, else `null`.
+
+### Effect library
+
+Effects a client defines are kept for every later project, so adit learns new looks and transitions.
+
+- **T-LIB-1** `Session::with_library(media, dir)` uses `dir` as the library; `Session::new` has none
+  (nothing is saved, nothing is offered). The binary (`mcp`, `serve`, `gui`) uses env `ADIT_LIBRARY`
+  if set and not empty, else `%APPDATA%\adit\effects` on Windows, else
+  `$XDG_CONFIG_HOME/adit/effects`, else `$HOME/.config/adit/effects`; none of them → no library.
+  The directory is created on the first save.
+- **T-LIB-2** After a successful `edit`, each `define_effect` in it (at any batch depth) is written to
+  `<dir>/<name>.json` as the serde JSON of its `EffectDef`, replacing an older file, when the name
+  matches `[A-Za-z0-9_-]{1,64}` and is not a built-in's name. The result gains `library: [names
+  saved, in command order]` (`[]` when none, also without a library). A failed `edit` saves nothing.
+  A write failure does not fail the edit; the name is left out. `undo` never changes the library.
+- **T-LIB-3** `effect_list` gives every effect an `origin`: `"builtin"`, `"project"` or `"library"`.
+  Library effects are read from the directory on every call (files that are not a valid `EffectDef`
+  are skipped) and listed after the others, `builtin: false`. A library effect whose name the
+  project (when `project_id` is given) also defines is listed once, as `"project"`.
+- **T-LIB-4** In `edit`, an `add_effect` / `add_transition` (or `set_transition` with `effect`) naming
+  an effect that is neither built-in nor defined in the project or earlier in the batch, but is in
+  the library with the right kind, works: the session puts a `define_effect` for it in front of the
+  batch (same undo step). `created` still has exactly one entry per command the caller sent.
+- **T-LIB-5** `instructions` (T-1) say that defined effects are saved to the library and reused, that a
+  new look or transition should be defined as a well-named effect with parameters rather than a
+  one-off, and what the three request scopes mean (for `app`: change the source in `source_dir`,
+  rebuild, and tell the user to restart). The text contains the words `library` and `source_dir`.
+
 ## Library surface (`adit_mcp`)
 
 ```rust
 pub struct Session;                       // cheap to clone (Arc inside); Send + Sync
 impl Session {
     pub fn new(media: std::sync::Arc<dyn adit_media::MediaBackend>) -> Self;
+    /// With an effect library directory (T-LIB-1).
+    pub fn with_library(media: std::sync::Arc<dyn adit_media::MediaBackend>, dir: std::path::PathBuf) -> Self;
     /// Runs one tool by name with JSON arguments; exactly what the MCP server does per call.
     pub fn call(&self, tool: &str, args: serde_json::Value) -> Result<ToolOutput, String>;
     /// Tool names, descriptions and input schemas, as served by `tools/list`.

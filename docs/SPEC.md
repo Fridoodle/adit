@@ -213,6 +213,30 @@ zero). Types and signatures: `crates/adit-core/src/{model,command,document,error
   one freshly allocated link id. `UnlinkClips`: listed clips get `link: None`. `GroupClips` /
   `UngroupClips`: the same for `group`.
 
+- **C-LABEL-1** `Clip.label: u8`, a colour label: 0 = none (the default, also when the field is absent
+  in JSON), 1..=8 = a colour. `AddClip` creates `label 0`. `SetClip { label: Some(n) }` sets it;
+  `n > 8` → `InvalidArgument`. `SetClip.label` defaults to `None` when omitted. A split copies it (R4).
+- **C-PASTE-1** `PasteClips { items: [{ track_id, clip }], mode }` adds copies of whole clips (`clip` is
+  a full `Clip`; its `start` is where the copy goes; its `id` is ignored). `mode` defaults to `place`.
+  Empty `items` → `InvalidArgument`. Tracks in more than one sequence → `InvalidArgument`.
+  `mode: insert` → `InvalidArgument`. Per item: unknown track → `NotFound`; locked track →
+  `TrackLocked`; I4 → `KindMismatch`; unknown media / sequence → `NotFound`; nesting the track's own
+  sequence → `NestCycle`; `start < 0`, `duration <= 0`, `speed` outside `[0.01, 100]`, `label > 8`, a
+  param name not in `CLIP_PARAMS`, unsorted or duplicate keyframe times, any non-finite number →
+  `InvalidArgument`; R7 → `SourceOutOfRange`.
+- **C-PASTE-2** Each copy equals its `clip` except: a new clip id; a new id for each effect instance;
+  `link`: items of this command that share the same `Some` link value get one fresh shared link id, a
+  link value carried by a single item becomes `None`; `group`: the same rule. Ids are allocated in
+  this order: clip ids in item order (so `created[i] = next_id + i`), effect-instance ids (item order,
+  then effect order), link ids (order of first appearance), group ids (order of first appearance),
+  then any id needed for splitting other clips. `created` = the new clip ids in item order.
+  Transitions are not copied.
+- **C-PASTE-3** `place`: an item overlapping an existing clip on its track, or another item on the
+  same track → `Overlap`. `overwrite`: two items overlapping each other on one track → `Overlap`;
+  otherwise clear (R5) every item's range on its track, then place all. Example: V1 = X `[0, 10s)`
+  (id 5, `next_id` 9); paste one copy of a 2 s clip at 4 s with `overwrite` → X `[0, 4s)`, the copy
+  `[4s, 6s)` with id 9, X's right part `[6s, 10s)` with id 10; `created = [9]`.
+
 ### Parameters, keyframes, effects, transitions
 
 - **C-PARAM-1** Target with `effect_id: None`: `name` must be in `CLIP_PARAMS` else `InvalidArgument`.
