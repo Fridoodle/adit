@@ -5,6 +5,7 @@ use super::{App, S, timecode};
 use crate::{Action, ClipPart, Drag, Hit, MenuItem, TimelineLayout, Tool, UiState};
 use adit_core::{ClipSource, Command, Id, PlaceMode, Project, Sequence, Time, TrackKind};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, pos2, vec2};
+use std::sync::Arc;
 
 const HEADER: f32 = 150.0;
 const RULER: f32 = 24.0;
@@ -103,6 +104,13 @@ impl App {
             for (path, w) in done {
                 self.wave_cache.insert(path, Some(w));
             }
+        }
+        // U-ED-23f: a failed waveform is tried again once the project changes.
+        if let Some(t) = self.tab()
+            && self.wave_rev != Some((t.id.clone(), t.revision))
+        {
+            self.wave_rev = Some((t.id.clone(), t.revision));
+            self.wave_cache.retain(|_, w| !matches!(w, Some(Err(_))));
         }
         let mut switch = None;
         let mut toggle_snap = false;
@@ -248,7 +256,15 @@ impl App {
             }
             _ => None,
         };
-        let after = dragging.and_then(|d| crate::preview(d, &project, &t.ui));
+        // U-ED-23b: computed once per change of the gesture or the project revision.
+        let after = dragging.and_then(|d| match &self.drag_preview {
+            Some((pid, rev, k, p)) if *pid == t.id && *rev == t.revision && *k == d => p.clone(),
+            _ => {
+                let p = crate::preview(d, &project, &t.ui).map(Arc::new);
+                self.drag_preview = Some((t.id.clone(), t.revision, d, p.clone()));
+                p
+            }
+        });
         let shown = after
             .as_ref()
             .and_then(|p| p.sequence(seq.id))
@@ -653,47 +669,50 @@ impl App {
         }
         let mut chosen = None;
         let mut transition = None;
+        let mut menu_open = false;
         if let Some((hit, items)) = &self.menu {
             let kind = hit_track(hit)
                 .and_then(|id| project.track(id))
                 .map(|(_, tr)| tr.kind);
             let effects = &self.effects;
-            resp.context_menu(|ui| {
-                for it in items {
-                    match it {
-                        MenuItem::Do(a) => {
-                            if ui.button(menu_text(*a)).clicked() {
-                                chosen = Some(*a);
+            menu_open = resp
+                .context_menu(|ui| {
+                    for it in items {
+                        match it {
+                            MenuItem::Do(a) => {
+                                if ui.button(menu_text(*a)).clicked() {
+                                    chosen = Some(*a);
+                                }
+                            }
+                            MenuItem::Labels => {
+                                ui.menu_button("Label", |ui| {
+                                    for (n, (name, _)) in LABELS.iter().enumerate() {
+                                        if ui.button(*name).clicked() {
+                                            chosen = Some(Action::SetLabel(n as u8));
+                                        }
+                                    }
+                                });
+                            }
+                            MenuItem::Transitions => {
+                                ui.menu_button("Add Transition", |ui| {
+                                    let names = effects
+                                        .iter()
+                                        .filter(|e| e["kind"] == "transition")
+                                        .filter_map(|e| e["name"].as_str())
+                                        .filter(|&n| {
+                                            kind != Some(TrackKind::Audio) || n == "crossfade"
+                                        });
+                                    for n in names {
+                                        if ui.button(n).clicked() {
+                                            transition = Some(n.to_string());
+                                        }
+                                    }
+                                });
                             }
                         }
-                        MenuItem::Labels => {
-                            ui.menu_button("Label", |ui| {
-                                for (n, (name, _)) in LABELS.iter().enumerate() {
-                                    if ui.button(*name).clicked() {
-                                        chosen = Some(Action::SetLabel(n as u8));
-                                    }
-                                }
-                            });
-                        }
-                        MenuItem::Transitions => {
-                            ui.menu_button("Add Transition", |ui| {
-                                let names = effects
-                                    .iter()
-                                    .filter(|e| e["kind"] == "transition")
-                                    .filter_map(|e| e["name"].as_str())
-                                    .filter(|&n| {
-                                        kind != Some(TrackKind::Audio) || n == "crossfade"
-                                    });
-                                for n in names {
-                                    if ui.button(n).clicked() {
-                                        transition = Some(n.to_string());
-                                    }
-                                }
-                            });
-                        }
                     }
-                }
-            });
+                })
+                .is_some();
         }
         if resp.hovered() {
             let d = ui.input(|i| i.smooth_scroll_delta());
@@ -728,6 +747,17 @@ impl App {
             }
         }
         let menu_hit = self.menu.as_ref().map(|m| m.0);
+        if !menu_open {
+            self.menu = None;
+        }
+        // U-ED-23c: files dropped with no pointer position go where the pointer first shows up.
+        if latest.is_some()
+            && let Some((pid, ids)) = self.drop_pending.take()
+            && pid == t.id
+            && let Some((track, at)) = self.pointer_track
+        {
+            self.drop_media(&ids, Some(track), at);
+        }
         self.apply(ops);
         self.edit(toggles);
         if let Some(a) = chosen {

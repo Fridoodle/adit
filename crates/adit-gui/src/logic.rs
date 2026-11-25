@@ -4,9 +4,9 @@ use crate::{
     Action, ClipPart, Drag, Hit, KeyChord, Op, SourceState, TimelineLayout, Tool, UiState,
 };
 use adit_core::{
-    Clip, ClipSource, Command, Document, Easing, Edge, FLICKS_PER_SECOND, Id, ParamTarget,
-    PasteItem, PlaceMode, Project, Sequence, Time, Track, TrackKind, TrimMode, frame_to_time,
-    time_to_frame,
+    Clip, ClipSource, Command, Document, Easing, Edge, FLICKS_PER_SECOND, Id, MAX_TIME,
+    ParamTarget, PasteItem, PlaceMode, Project, Sequence, Time, Track, TrackKind, TrimMode,
+    frame_to_time, time_to_frame,
 };
 use eframe::egui::Key;
 
@@ -1133,6 +1133,9 @@ pub(crate) fn snap_delta(
     ui: &UiState,
     tolerance: Time,
 ) -> Time {
+    // U-ED-23h: clamped first, so `abs` and the sums below cannot overflow.
+    let delta = delta.clamp(-MAX_TIME, MAX_TIME);
+    let tolerance = tolerance.clamp(-MAX_TIME, MAX_TIME);
     let Some(s) = project.sequence(ui.sequence_id) else {
         return delta;
     };

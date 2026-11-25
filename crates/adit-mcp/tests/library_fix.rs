@@ -69,13 +69,15 @@ fn undo_depth(s: &Session, pid: &str) -> u64 {
 }
 
 /// A valid filter whose JSON text is exactly `len` bytes (padded with a WGSL comment).
-fn padded(name: &str, len: usize) -> Value {
-    let mut d = swap_def(name);
-    let base = d.to_string().len() + "\n//".len() + 1; // `\n` is 2 bytes in JSON text
-    assert!(len > base);
-    d["wgsl"] = json!(format!("{SWAP_WGSL}\n//{}", "x".repeat(len - base)));
-    assert_eq!(d.to_string().len(), len, "test setup: file size");
-    d
+/// Writes a valid def padded with trailing JSON whitespace to exactly `len` bytes. (Padding the
+/// WGSL would break SPEC H-1's 65,536-byte limit, which is not what T-LIB-7 is about.)
+fn put_padded(dir: &Path, name: &str, len: usize) {
+    std::fs::create_dir_all(dir).unwrap();
+    let mut text = swap_def(name).to_string();
+    assert!(len > text.len());
+    text.push_str(&" ".repeat(len - text.len()));
+    assert_eq!(text.len(), len, "test setup: file size");
+    std::fs::write(dir.join(format!("{name}.json")), text).unwrap();
 }
 
 // ---------------------------------------------------------------- T-LIB-7 device names
@@ -185,9 +187,9 @@ fn t_lib_7_case_clash_saves_nothing_and_exact_name_replaces() {
 #[test]
 fn t_lib_7_file_over_1_mib_is_not_listed_and_cannot_be_used() {
     let tmp = tempfile::tempdir().unwrap();
-    put(tmp.path(), &padded("huge", LIMIT + 1));
-    put(tmp.path(), &padded("fits", LIMIT - 1));
-    put(tmp.path(), &padded("exact", LIMIT));
+    put_padded(tmp.path(), "huge", LIMIT + 1);
+    put_padded(tmp.path(), "fits", LIMIT - 1);
+    put_padded(tmp.path(), "exact", LIMIT);
     let s = lib_session(tmp.path());
     assert_eq!(
         std::fs::metadata(tmp.path().join("huge.json"))

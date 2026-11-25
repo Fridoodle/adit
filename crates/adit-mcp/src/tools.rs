@@ -41,6 +41,8 @@ pub struct Inner {
     library: Option<PathBuf>,
     /// S-4 peaks per media path.
     waveforms: Mutex<HashMap<String, Arc<Vec<f32>>>>,
+    /// T-LIB-7: taken before the state lock is released, so library writes follow edit order.
+    lib_write: Mutex<()>,
 }
 
 #[derive(Default)]
@@ -110,6 +112,7 @@ impl Inner {
             ui: Mutex::new(None),
             library,
             waveforms: Mutex::new(HashMap::new()),
+            lib_write: Mutex::new(()),
         }
     }
 }
@@ -804,6 +807,12 @@ fn run_checked(
             audio_filter: Some(f),
             ..
         } => adit_media::check_audio_filter(f).map_err(|e| format!("audio_filter: {e}"))?,
+        // T-LIB-7: a pasted clip carries its own filter, checked as set_clip checks one.
+        Command::PasteClips { items, .. } => {
+            for f in items.iter().map(|it| it.clip.audio_filter.as_str()) {
+                adit_media::check_audio_filter(f).map_err(|e| format!("audio_filter: {e}"))?;
+            }
+        }
         _ => {}
     }
     out.extend(d.apply(c.clone()).map_err(|e| e.to_string())?.created);
@@ -814,27 +823,30 @@ fn edit(i: &Arc<Inner>, a: A) -> R<ToolOutput> {
     let cmds = a
         .array("commands")?
         .ok_or("missing required argument `commands`")?;
-    let mut st = lock(&i.state);
-    let e = entry(&mut st, a.str("project_id")?)?;
-    let fps = match a.opt_u64("sequence_id")? {
-        Some(_) => Some(resolve_seq(e.doc.project(), a)?.fps),
-        None => e.doc.project().sequences.first().map(|s| s.fps),
-    };
-    let mut parsed = Vec::with_capacity(cmds.len());
-    for (n, c) in cmds.iter().enumerate() {
-        let mut c = c.clone();
-        let at = |m: String| format!("commands[{n}]: {m}");
-        convert_times(&mut c, fps).map_err(at)?;
-        parsed.push(serde_json::from_value::<Command>(c).map_err(|m| at(m.to_string()))?);
-    }
+    let pid = a.str("project_id")?;
     // T-LIB-4: a used effect that only the library has gets a `define_effect` in front of the batch;
-    // the dry run then starts over, so it always checks exactly what is applied.
+    // the dry run then starts over, so it always checks exactly what is applied. The library file
+    // is read with the state unlocked (T-LIB-7), so each try locks afresh.
     let mut front: Vec<Command> = Vec::new();
-    let created = loop {
+    let (mut st, created, parsed) = loop {
+        let mut st = lock(&i.state);
+        let e = entry(&mut st, pid)?;
+        let fps = match a.opt_u64("sequence_id")? {
+            Some(_) => Some(resolve_seq(e.doc.project(), a)?.fps),
+            None => e.doc.project().sequences.first().map(|s| s.fps),
+        };
+        let mut parsed = Vec::with_capacity(cmds.len());
+        for (n, c) in cmds.iter().enumerate() {
+            let mut c = c.clone();
+            let at = |m: String| format!("commands[{n}]: {m}");
+            convert_times(&mut c, fps).map_err(at)?;
+            parsed.push(serde_json::from_value::<Command>(c).map_err(|m| at(m.to_string()))?);
+        }
         let mut need = None;
         match dry_run(e.doc.project(), &front, &parsed, &mut need) {
-            Ok(c) => break c,
+            Ok(c) => break (st, c, parsed),
             Err(m) => {
+                drop(st);
                 let Some((name, kind)) = need else {
                     return Err(m);
                 };
@@ -859,6 +871,7 @@ fn edit(i: &Arc<Inner>, a: A) -> R<ToolOutput> {
             }
         }
     };
+    let e = entry(&mut st, pid)?;
     let mut defs = Vec::new();
     collect_defs(&parsed, &mut defs);
     let before = e.doc.undo_depth();
@@ -870,11 +883,15 @@ fn edit(i: &Arc<Inner>, a: A) -> R<ToolOutput> {
         e.changed();
     }
     let undo_depth = e.doc.undo_depth();
+    let order = lock(&i.lib_write);
     drop(st);
     // T-LIB-2: only now, so a failed edit saves nothing; a write failure only leaves the name out.
     let mut library: Vec<&str> = Vec::new();
     if let Some(dir) = &i.library {
-        for d in defs.iter().filter(|d| lib_name_ok(&d.name)) {
+        for d in defs
+            .iter()
+            .filter(|d| lib_name_ok(&d.name) && !lib_case_clash(dir, &d.name))
+        {
             let saved = std::fs::create_dir_all(dir).is_ok()
                 && dir
                     .join(format!("{}.json", d.name))
@@ -886,6 +903,7 @@ fn edit(i: &Arc<Inner>, a: A) -> R<ToolOutput> {
             }
         }
     }
+    drop(order);
     ok(json!({ "created": created, "undo_depth": undo_depth, "library": library }))
 }
 
@@ -934,15 +952,50 @@ fn lib_name_ok(name: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
         && !builtins().iter().any(|d| d.name == name)
+        && !is_device_name(name)
 }
 
-/// `<dir>/<name>.json` when it is an `EffectDef` with that same name (T-LIB-6).
-// shortcut: reads the whole file whatever its size; cap it if the directory is ever shared.
+/// T-LIB-7: Windows device names (any case) open the device, not a file.
+fn is_device_name(name: &str) -> bool {
+    let u = name.to_ascii_uppercase();
+    matches!(u.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (u.len() == 4
+            && (u.starts_with("COM") || u.starts_with("LPT"))
+            && matches!(u.as_bytes()[3], b'1'..=b'9'))
+}
+
+/// T-LIB-7: a `.json` file whose stem equals `name` ignoring case but not exactly (`glow` vs
+/// `Glow`); on a case-insensitive file system saving would overwrite it.
+fn lib_case_clash(dir: &Path, name: &str) -> bool {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|f| {
+            f.file_name()
+                .to_str()
+                .and_then(|n| n.strip_suffix(".json"))
+                .is_some_and(|stem| stem != name && stem.eq_ignore_ascii_case(name))
+        })
+}
+
+/// T-LIB-7: larger library files are skipped.
+const LIB_MAX_BYTES: u64 = 1_048_576;
+
+/// `<dir>/<name>.json` when it is an `EffectDef` with that same name (T-LIB-6) and at most
+/// `LIB_MAX_BYTES` long (T-LIB-7).
 fn lib_load(dir: &Path, name: &str) -> Option<EffectDef> {
+    use std::io::Read;
     if !lib_name_ok(name) {
         return None;
     }
-    let text = std::fs::read_to_string(dir.join(format!("{name}.json"))).ok()?;
+    let f = std::fs::File::open(dir.join(format!("{name}.json"))).ok()?;
+    let mut text = String::new();
+    // Read one byte past the limit: a file that grew after a metadata check is still caught.
+    f.take(LIB_MAX_BYTES + 1).read_to_string(&mut text).ok()?;
+    if text.len() as u64 > LIB_MAX_BYTES {
+        return None;
+    }
     let def: EffectDef = serde_json::from_str(&text).ok()?;
     (def.name == name).then_some(def)
 }

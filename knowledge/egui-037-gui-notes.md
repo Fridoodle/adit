@@ -48,3 +48,4 @@ Editing-comfort window work (U-ED-10..21), verified 2026-11-25:
   reopens the prompt.
 
 Verified: 2026-11-25
+- Blocking a panel's widgets (U-ED-23d, `panels.rs` `wand_cover`): `ui.interact(ui.max_rect(), Id::unique(..), Sense::click_and_drag())` added *after* the panel's widgets wins egui's hit test (last = topmost on a tie), no dimming. Keep it while a dialog is open: in kittest the second click of a double click lands after the first click's dialog opened, and egui's double-click timing is per input, not per widget. Verified: 2026-11-25

@@ -8,6 +8,7 @@ use adit_core::{
 };
 use eframe::egui::{self, Color32, RichText};
 use serde_json::json;
+use std::time::{Duration, Instant};
 
 /// Tool bar: tool, name (the accessible label), key, what it does (U-ED-11).
 const TOOLS: &[(Tool, &str, &str, &str)] = &[
@@ -253,7 +254,10 @@ impl App {
         });
         let r = egui::Panel::bottom("status")
             .frame(frame(26))
-            .show(ui, |ui| self.status_bar(ui));
+            .show(ui, |ui| {
+                self.status_bar(ui);
+                self.wand_cover(ui, "Status");
+            });
         self.panel_rects.push(("Status", r.response.rect));
         let h = ui.available_height();
         egui::Panel::bottom("lower")
@@ -265,7 +269,10 @@ impl App {
                     .resizable(true)
                     .default_size(300.0)
                     .frame(frame(26))
-                    .show(ui, |ui| self.bin_panel(ui));
+                    .show(ui, |ui| {
+                        self.bin_panel(ui);
+                        self.wand_cover(ui, "bin");
+                    });
                 let name = if self.show_effects {
                     "Effects"
                 } else {
@@ -279,7 +286,10 @@ impl App {
                 let r = egui::Panel::right("meters")
                     .exact_size(56.0)
                     .frame(frame(26))
-                    .show(ui, |ui| self.meters(ui));
+                    .show(ui, |ui| {
+                        self.meters(ui);
+                        self.wand_cover(ui, "Meters");
+                    });
                 self.panel_rects.push(("Meters", r.response.rect));
                 egui::CentralPanel::default()
                     .frame(frame(22))
@@ -290,7 +300,10 @@ impl App {
             .resizable(true)
             .default_size(w * 0.36)
             .frame(frame(26))
-            .show(ui, |ui| self.source_panel(ui));
+            .show(ui, |ui| {
+                self.source_panel(ui);
+                self.wand_cover(ui, "source");
+            });
         let name = if self.show_effect_controls {
             "Effect Controls"
         } else {
@@ -301,12 +314,28 @@ impl App {
             .resizable(true)
             .default_size(260.0)
             .frame(frame(26))
-            .show(ui, |ui| self.requests_panel(ui));
+            .show(ui, |ui| {
+                self.requests_panel(ui);
+                self.wand_cover(ui, "Requests");
+            });
         self.panel_rects.push(("Requests", r.response.rect));
         egui::CentralPanel::default()
             .frame(frame(26))
             .show(ui, |ui| self.program_panel(ui));
         self.dialogs(ui.ctx());
+    }
+
+    /// U-ED-23d: with tool `Wand` a sensing rect over the whole panel, added after its widgets,
+    /// takes every press, so the panel's widgets get none; `wand_panels` reads the press.
+    fn wand_cover(&self, ui: &mut egui::Ui, id: &str) {
+        // Also while the prompt is open: the second click of a double click comes after it opens.
+        if self.ui_state().map(|u| u.tool) == Some(Tool::Wand) {
+            ui.interact(
+                ui.max_rect(),
+                egui::Id::unique(("wand_cover", id)),
+                egui::Sense::click_and_drag(),
+            );
+        }
     }
 
     fn menu(&mut self, ui: &mut egui::Ui) {
@@ -834,10 +863,13 @@ impl App {
 
     pub(super) fn refresh_effects(&mut self) {
         let Some(t) = self.tab() else { return };
-        let key = (t.id.clone(), t.revision);
-        if self.effects_at.as_ref() == Some(&key) {
+        // U-ED-23e: also re-read every 2 s, for library effects saved by other clients.
+        if self.effects_at.as_ref().is_some_and(|(id, rev, at)| {
+            *id == t.id && *rev == t.revision && at.elapsed() < Duration::from_secs(2)
+        }) {
             return;
         }
+        let key = (t.id.clone(), t.revision, Instant::now());
         if let Ok(o) = self
             .session
             .call("effect_list", json!({ "project_id": t.id }))

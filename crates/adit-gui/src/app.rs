@@ -118,7 +118,8 @@ pub struct App {
     export_job: Option<String>,
     /// `effect_list` of the active project and the (project, revision) it was read at.
     effects: Vec<Value>,
-    effects_at: Option<(String, u64)>,
+    /// Project, revision and time of the last `effect_list` read (U-ED-23e).
+    effects_at: Option<(String, u64, Instant)>,
     /// Effect Controls values being dragged, committed on release.
     fx_drag: HashMap<String, f64>,
     text_buf: Option<TextBuf>,
@@ -138,6 +139,8 @@ pub struct App {
     ctx: egui::Context,
     /// Copied clips, shared by all tabs (U-ED-10).
     clipboard: Vec<crate::ClipboardItem>,
+    /// Project the clipboard was copied from (U-ED-23g).
+    clipboard_from: Option<String>,
     /// Timeline right-click menu: the hit it was opened on and its items (U-ED-10).
     menu: Option<(crate::Hit, Vec<crate::MenuItem>)>,
     uniform_scale: bool,
@@ -146,11 +149,17 @@ pub struct App {
     /// Waveforms by media path, `None` while computing (U-ED-14).
     waves: worker::Worker<Vec<String>, Vec<(String, Wave)>>,
     wave_cache: HashMap<String, Option<Wave>>,
+    /// Project and revision `wave_cache` errors were kept for (U-ED-23f).
+    wave_rev: Option<(String, u64)>,
     /// Panels a wand click may name, with their rects this frame (U-ED-18).
     panel_rects: Vec<(&'static str, egui::Rect)>,
     wand_panel_press: Option<egui::Pos2>,
     /// Track and unsnapped time under the pointer in the timeline, for file drops (U-ED-16).
     pointer_track: Option<(Id, Time)>,
+    /// Project and media of a file drop that came with no pointer position (U-ED-23c).
+    drop_pending: Option<(String, Vec<Id>)>,
+    /// Drag preview of the last frame: project, revision, gesture, result (U-ED-23b).
+    drag_preview: Option<(String, u64, crate::Drag, Option<Arc<Project>>)>,
 }
 
 type Wave = Result<Arc<Vec<f32>>, String>;
@@ -195,6 +204,7 @@ impl App {
             shots_since: None,
             ctx: ctx.clone(),
             clipboard: Vec::new(),
+            clipboard_from: None,
             menu: None,
             uniform_scale: true,
             preview_scale: 2,
@@ -211,9 +221,12 @@ impl App {
                     .collect()
             }),
             wave_cache: HashMap::new(),
+            wave_rev: None,
             panel_rects: Vec::new(),
             wand_panel_press: None,
             pointer_track: None,
+            drop_pending: None,
+            drag_preview: None,
         };
         let mut want = None;
         if let Some(path) = app.options.open.clone() {
@@ -363,6 +376,11 @@ impl App {
             .unwrap_or_default();
         if let Some((track, at)) = self.pointer_track {
             self.drop_media(&ids, Some(track), at);
+        } else if ctx.input(|i| i.pointer.latest_pos().is_none())
+            && let Some(pid) = self.project_id()
+        {
+            // U-ED-23c: placed by the timeline at the first pointer position reported.
+            self.drop_pending = Some((pid.to_string(), ids));
         }
     }
 
@@ -390,6 +408,7 @@ impl App {
     /// U-ED-10, U-ED-21: the shared clipboard, and text so the OS delivers a paste event for ^V.
     fn set_clipboard(&mut self, items: Vec<crate::ClipboardItem>) {
         self.clipboard = items;
+        self.clipboard_from = self.project_id().map(str::to_string);
         self.ctx.copy_text("adit clips".into());
     }
 
@@ -620,7 +639,30 @@ impl App {
                         continue;
                     };
                     let project = t.project.clone();
-                    let ops = crate::paste(&self.clipboard, &project, &mut t.ui);
+                    // U-ED-23g: media and sequence ids mean nothing in another project.
+                    let items: Vec<crate::ClipboardItem> =
+                        if self.clipboard_from.as_deref() == Some(t.id.as_str()) {
+                            self.clipboard.clone()
+                        } else {
+                            self.clipboard
+                                .iter()
+                                .filter(|it| {
+                                    !matches!(
+                                        it.clip.source,
+                                        adit_core::ClipSource::Media { .. }
+                                            | adit_core::ClipSource::Sequence { .. }
+                                    )
+                                })
+                                .cloned()
+                                .collect()
+                        };
+                    if items.is_empty() && !self.clipboard.is_empty() {
+                        self.status =
+                            "nothing to paste: media and nested sequences stay in their project"
+                                .into();
+                        continue;
+                    }
+                    let ops = crate::paste(&items, &project, &mut t.ui);
                     self.apply(ops);
                 }
                 Op::Edit(c) => {
@@ -822,6 +864,14 @@ impl App {
             // The OS turns ^C / ^X / ^V into these instead of key events (U-ED-10).
             match e {
                 egui::Event::Copy => self.run_action(Action::Copy),
+                // U-ED-23a: Windows sends Shift+Delete as a cut event.
+                egui::Event::Cut
+                    if ctx.input(|i| {
+                        i.modifiers.shift && !i.modifiers.ctrl && !i.modifiers.command
+                    }) =>
+                {
+                    self.run_action(Action::RippleDelete)
+                }
                 egui::Event::Cut => self.run_action(Action::Cut),
                 egui::Event::Paste(_) => self.run_action(Action::Paste),
                 _ => {}
