@@ -1379,10 +1379,11 @@ fn u_ed_7_candidates_include_clips_on_other_tracks_only_of_this_sequence() {
         4 * S,
         "U-ED-7: a clip end is a candidate"
     );
-    // End at 9.95 s: 10 s is only a clip start in the other sequence -> no snap to 6 s.
+    // Moved by 6.95 s: start 8.95 s, end 10.95 s. Only the other sequence has an edge near
+    // (900 ends at 11 s) -> no snap to 7 s.
     assert_ne!(
-        snap_delta(4_198_320_000, &[101], &p, &ui(), TOL),
-        6 * S,
+        snap_delta(4_903_920_000, &[101], &p, &ui(), TOL),
+        7 * S,
         "U-ED-7: other sequences give no candidates"
     );
 }

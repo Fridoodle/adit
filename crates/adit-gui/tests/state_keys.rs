@@ -406,6 +406,7 @@ fn empty_sequence_every_action() {
             Action::Import => vec![Op::Import],
             Action::Export => vec![Op::Export],
             Action::WandPrompt => vec![Op::WandPrompt],
+            Action::Paste => vec![Op::Paste],
             _ => vec![],
         };
         assert_eq!(ops, want, "{a:?} on an empty sequence");

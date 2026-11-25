@@ -4,8 +4,9 @@ use crate::{
     Action, ClipPart, Drag, Hit, KeyChord, Op, SourceState, TimelineLayout, Tool, UiState,
 };
 use adit_core::{
-    Clip, ClipSource, Command, Easing, Edge, FLICKS_PER_SECOND, Id, ParamTarget, PlaceMode,
-    Project, Sequence, Time, Track, TrackKind, TrimMode, frame_to_time, time_to_frame,
+    Clip, ClipSource, Command, Document, Easing, Edge, FLICKS_PER_SECOND, Id, ParamTarget,
+    PasteItem, PlaceMode, Project, Sequence, Time, Track, TrackKind, TrimMode, frame_to_time,
+    time_to_frame,
 };
 use eframe::egui::Key;
 
@@ -148,12 +149,58 @@ pub(crate) fn perform(action: Action, project: &Project, ui: &mut UiState) -> Ve
     let ph = ui.playhead;
     let dur = s.duration();
     match action {
-        Action::Copy
-        | Action::Cut
-        | Action::Paste
-        | Action::Unlink
-        | Action::SetLabel(_)
-        | Action::CloseGap { .. } => todo!("U-ED-1..5"),
+        Action::Copy => {
+            if !effective(s, ui).is_empty() {
+                return vec![Op::Copy];
+            }
+        }
+        Action::Cut => {
+            if !effective(s, ui).is_empty() {
+                let mut ops = vec![Op::Copy];
+                ops.extend(perform(Action::Delete, project, ui));
+                return ops;
+            }
+        }
+        Action::Paste => return vec![Op::Paste],
+        Action::Unlink => {
+            let clip_ids: Vec<Id> = clips_by_id(s, &effective(s, ui))
+                .into_iter()
+                .filter(|c| c.link.is_some())
+                .map(|c| c.id)
+                .collect();
+            if !clip_ids.is_empty() {
+                return edit(vec![Command::UnlinkClips { clip_ids }]);
+            }
+        }
+        Action::SetLabel(n) => {
+            if n <= 8 {
+                return edit(
+                    effective(s, ui)
+                        .into_iter()
+                        .map(|clip_id| Command::SetClip {
+                            clip_id,
+                            name: None,
+                            enabled: None,
+                            reverse: None,
+                            blend: None,
+                            audio_filter: None,
+                            label: Some(n),
+                        })
+                        .collect(),
+                );
+            }
+        }
+        Action::CloseGap { track_id, time } => {
+            let ok = s.tracks.iter().any(|t| {
+                t.id == track_id
+                    && !t.locked
+                    && !t.clips.iter().any(|c| under(c, time))
+                    && t.clips.iter().any(|c| c.start > time)
+            });
+            if ok {
+                return edit(vec![Command::CloseGap { track_id, time }]);
+            }
+        }
         Action::SetTool(t) => ui.tool = t,
         Action::PlayPause => {
             if ui.playing {
@@ -643,6 +690,9 @@ pub(crate) fn default_keymap() -> Vec<(KeyChord, Action)> {
         p(Key::Q, RippleTrimPrev),
         p(Key::W, RippleTrimNext),
         p(Key::Delete, Delete),
+        c(Key::C, Copy),
+        c(Key::X, Cut),
+        c(Key::V, Paste),
         p(Key::Backspace, Delete),
         sh(Key::Delete, RippleDelete),
         sh(Key::Backspace, RippleDelete),
@@ -751,6 +801,20 @@ pub(crate) fn hit(l: &TimelineLayout, project: &Project, sequence_id: Id, x: f32
     }
 }
 
+/// Snap targets of U-SNAP, without the clips in `exclude`.
+fn candidates(s: &Sequence, ui: &UiState, exclude: &[Id]) -> Vec<Time> {
+    let mut cands = vec![0, ui.playhead];
+    cands.extend(ui.mark_in);
+    cands.extend(ui.mark_out);
+    cands.extend(s.markers.iter().map(|m| m.time));
+    cands.extend(
+        all_clips(s)
+            .filter(|c| !exclude.contains(&c.id))
+            .flat_map(|c| [c.start, c.end()]),
+    );
+    cands
+}
+
 pub(crate) fn snap(
     time: Time,
     project: &Project,
@@ -765,16 +829,7 @@ pub(crate) fn snap(
     if !ui.snap {
         return nearest;
     }
-    let mut cands = vec![0, ui.playhead];
-    cands.extend(ui.mark_in);
-    cands.extend(ui.mark_out);
-    cands.extend(s.markers.iter().map(|m| m.time));
-    cands.extend(
-        all_clips(s)
-            .filter(|c| !exclude.contains(&c.id))
-            .flat_map(|c| [c.start, c.end()]),
-    );
-    cands
+    candidates(s, ui, exclude)
         .into_iter()
         .filter(|c| (c - time).abs() <= tolerance)
         .min_by_key(|c| ((c - time).abs(), *c))
@@ -958,33 +1013,218 @@ pub(crate) fn drag(d: Drag, project: &Project, ui: &mut UiState) -> Vec<Op> {
     vec![]
 }
 
-// ------------------------------------------------------------- U-ED-* (stubs, not implemented)
+// ----------------------------------------------------------------------------------- U-ED-*
 
-pub(crate) fn copy(_: &Project, _: &UiState) -> Vec<crate::ClipboardItem> {
-    todo!("U-ED-1")
+pub(crate) fn copy(project: &Project, ui: &UiState) -> Vec<crate::ClipboardItem> {
+    let Some(s) = project.sequence(ui.sequence_id) else {
+        return vec![];
+    };
+    let ids = effective(s, ui);
+    s.tracks
+        .iter()
+        .flat_map(|t| {
+            let mut v: Vec<&Clip> = t.clips.iter().filter(|c| ids.contains(&c.id)).collect();
+            v.sort_by_key(|c| c.start);
+            v.into_iter().map(move |c| crate::ClipboardItem {
+                track_id: t.id,
+                clip: c.clone(),
+            })
+        })
+        .collect()
 }
 
-pub(crate) fn paste(_: &[crate::ClipboardItem], _: &Project, _: &mut UiState) -> Vec<Op> {
-    todo!("U-ED-2")
+pub(crate) fn paste(
+    items: &[crate::ClipboardItem],
+    project: &Project,
+    ui: &mut UiState,
+) -> Vec<Op> {
+    let Some(s) = project.sequence(ui.sequence_id) else {
+        return vec![];
+    };
+    let (Some(base), Some(end)) = (
+        items.iter().map(|i| i.clip.start).min(),
+        items.iter().map(|i| i.clip.end()).max(),
+    ) else {
+        return vec![];
+    };
+    let ph = ui.playhead;
+    let kept: Vec<PasteItem> = items
+        .iter()
+        .filter(|i| s.tracks.iter().any(|t| t.id == i.track_id && !t.locked))
+        .map(|i| {
+            let mut clip = i.clip.clone();
+            clip.start = ph + (clip.start - base);
+            PasteItem {
+                track_id: i.track_id,
+                clip,
+            }
+        })
+        .collect();
+    if kept.is_empty() {
+        return vec![];
+    }
+    ui.playhead = at(s, frame(s, ph + (end - base)));
+    ui.selection.clear();
+    edit(vec![Command::PasteClips {
+        items: kept,
+        mode: PlaceMode::Overwrite,
+    }])
 }
 
-pub(crate) fn transition_at(_: &Project, _: Id, _: Id, _: Time, _: &str) -> Vec<Op> {
-    todo!("U-ED-6")
+pub(crate) fn transition_at(
+    project: &Project,
+    sequence_id: Id,
+    track_id: Id,
+    time: Time,
+    effect: &str,
+) -> Vec<Op> {
+    let Some(t) = project
+        .sequence(sequence_id)
+        .and_then(|s| s.tracks.iter().find(|t| t.id == track_id))
+        .filter(|t| !t.locked)
+    else {
+        return vec![];
+    };
+    let add = |left: Option<&Clip>, right: Option<&Clip>, duration: Time| Command::AddTransition {
+        track_id,
+        left: left.map(|c| c.id),
+        right: right.map(|c| c.id),
+        effect: effect.into(),
+        duration,
+        params: Default::default(),
+    };
+    if let Some(c) = t.clips.iter().find(|c| under(c, time)) {
+        let cmd = if time - c.start < c.end() - time {
+            match t.clips.iter().find(|p| p.end() == c.start) {
+                Some(p) => add(Some(p), Some(c), S.min(2 * p.duration).min(2 * c.duration)),
+                None => add(None, Some(c), S.min(c.duration)),
+            }
+        } else {
+            match t.clips.iter().find(|n| n.start == c.end()) {
+                Some(n) => add(Some(c), Some(n), S.min(2 * c.duration).min(2 * n.duration)),
+                None => add(Some(c), None, S.min(c.duration)),
+            }
+        };
+        return edit(vec![cmd]);
+    }
+    let l = t
+        .clips
+        .iter()
+        .filter(|c| c.end() <= time)
+        .max_by_key(|c| c.end());
+    let r = t
+        .clips
+        .iter()
+        .filter(|c| c.start > time)
+        .min_by_key(|c| c.start);
+    let (Some(l), Some(r)) = (l, r) else {
+        return vec![];
+    };
+    edit(vec![
+        Command::CloseGap { track_id, time },
+        add(Some(l), Some(r), S.min(2 * l.duration).min(2 * r.duration)),
+    ])
 }
 
-pub(crate) fn snap_delta(_: Time, _: &[Id], _: &Project, _: &UiState, _: Time) -> Time {
-    todo!("U-ED-7")
+pub(crate) fn snap_delta(
+    delta: Time,
+    clips: &[Id],
+    project: &Project,
+    ui: &UiState,
+    tolerance: Time,
+) -> Time {
+    let Some(s) = project.sequence(ui.sequence_id) else {
+        return delta;
+    };
+    let rounded = round_frame(s, delta.abs()) * delta.signum();
+    if !ui.snap {
+        return rounded;
+    }
+    let cands = candidates(s, ui, clips);
+    // (distance, resulting delta) per edge/candidate pair; the smallest pair in range wins.
+    clips_by_id(s, clips)
+        .into_iter()
+        .flat_map(|c| [c.start, c.end()])
+        .flat_map(|e| cands.iter().map(move |&k| ((k - e - delta).abs(), k - e)))
+        .filter(|&(d, _)| d <= tolerance)
+        .min()
+        .map_or(rounded, |(_, r)| r)
 }
 
-pub(crate) fn preview(_: crate::Drag, _: &Project, _: &UiState) -> Option<Project> {
-    todo!("U-ED-8")
+pub(crate) fn preview(d: Drag, project: &Project, ui: &UiState) -> Option<Project> {
+    let mut u = ui.clone();
+    let mut doc = Document::new(project.clone());
+    let mut any = false;
+    for op in drag(d, project, &mut u) {
+        if let Op::Edit(commands) = op {
+            any = true;
+            doc.apply(Command::Batch { commands }).ok()?;
+        }
+    }
+    any.then(|| doc.project().clone())
 }
 
 pub(crate) fn context_menu(
-    _: crate::Hit,
-    _: bool,
-    _: &Project,
-    _: &mut UiState,
+    hit: Hit,
+    has_clipboard: bool,
+    project: &Project,
+    ui: &mut UiState,
 ) -> Vec<crate::MenuItem> {
-    todo!("U-ED-9")
+    use crate::MenuItem::*;
+    let Some(s) = project.sequence(ui.sequence_id) else {
+        return vec![];
+    };
+    let mut v = Vec::new();
+    match hit {
+        Hit::Clip { clip_id, .. } => {
+            if !s
+                .tracks
+                .iter()
+                .any(|t| !t.locked && t.clips.iter().any(|c| c.id == clip_id))
+            {
+                return v;
+            }
+            if !effective(s, ui).contains(&clip_id) {
+                ui.selection = vec![clip_id];
+            }
+            let eff = clips_by_id(s, &effective(s, ui));
+            v.extend([Do(Action::Cut), Do(Action::Copy)]);
+            if has_clipboard {
+                v.push(Do(Action::Paste));
+            }
+            v.extend([Do(Action::Delete), Do(Action::RippleDelete)]);
+            if eff.iter().any(|c| c.link.is_some()) {
+                v.push(Do(Action::Unlink));
+            }
+            if ui.selection.len() >= 2 {
+                v.push(Do(Action::Group));
+            }
+            if eff.iter().any(|c| c.group.is_some()) {
+                v.push(Do(Action::Ungroup));
+            }
+            v.extend([
+                Do(Action::ToggleEnable),
+                Do(Action::SpeedDialog),
+                Do(Action::GainDialog),
+                Labels,
+                Transitions,
+                Do(Action::WandPrompt),
+            ]);
+        }
+        Hit::Empty { track_id, time } => {
+            if has_clipboard {
+                v.push(Do(Action::Paste));
+            }
+            let gap = Action::CloseGap { track_id, time };
+            if !perform(gap, project, ui).is_empty() {
+                v.push(Do(gap));
+            }
+            if !transition_at(project, ui.sequence_id, track_id, time, "").is_empty() {
+                v.push(Transitions);
+            }
+            v.push(Do(Action::WandPrompt));
+        }
+        _ => {}
+    }
+    v
 }
