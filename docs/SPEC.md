@@ -297,6 +297,13 @@ is an ordinary error.
 - **H-13 (mcp).** `project_save` flushes the temp file to disk (`sync_all`) before the rename. At
   most 4 export jobs run at once; a fifth `export` → error.
 
+- **H-16 Clarifications.** H-1 measures `EffectDef.wgsl` itself; a definition at depth exactly 64 must
+  validate without overflowing the stack (validate on a thread with enough stack if needed). H-3
+  covers `AddMedia` duration and marker duration; a non-ripple `SetClipSpeed` ending past `MAX_TIME`
+  → `InvalidArgument`. H-6: filter names are lower-case and non-empty (`"volume=1,"` and `"=1"` are
+  rejected); `|` is allowed inside args; the error text contains the rejected name. H-12 wins over
+  X-2 when a file already existed at the target. H-13 "at once" = jobs in state `running`.
+
 Known limits, not fixed in this milestone: a user shader with a very long loop can stall the renderer;
 blocking tools and HTTP requests each take a thread without an upper bound; one idle ffmpeg reader per
 video file is kept alive.
