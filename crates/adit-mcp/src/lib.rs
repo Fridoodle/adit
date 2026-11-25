@@ -2,14 +2,20 @@
 //! jobs; the MCP servers (stdio, HTTP) and later the GUI all call into it.
 //! Contract: docs/MCP_TOOLS.md. Signatures here are fixed; bodies and private items are free.
 
+mod proto;
+mod time;
+mod tools;
+
 use adit_media::MediaBackend;
 use serde_json::Value;
 use std::sync::Arc;
 
+pub use proto::{serve_http, serve_stdio};
+
 /// Cheap to clone; all clones share the same state.
 #[derive(Clone)]
 pub struct Session {
-    _private: (),
+    inner: Arc<tools::Inner>,
 }
 
 pub struct ToolOutput {
@@ -29,28 +35,20 @@ pub struct ToolInfo {
 }
 
 impl Session {
-    pub fn new(_media: Arc<dyn MediaBackend>) -> Self {
-        todo!()
+    pub fn new(media: Arc<dyn MediaBackend>) -> Self {
+        Session {
+            inner: Arc::new(tools::Inner::new(media)),
+        }
     }
 
     /// Runs one tool by name with JSON arguments; exactly what the MCP server does per call.
     /// `Err` = the message of an `isError` tool result.
-    pub fn call(&self, _tool: &str, _args: Value) -> Result<ToolOutput, String> {
-        todo!()
+    pub fn call(&self, tool: &str, args: Value) -> Result<ToolOutput, String> {
+        tools::call(&self.inner, tool, args)
     }
 
     /// Tool names, descriptions and input schemas, as served by `tools/list`.
     pub fn tools() -> Vec<ToolInfo> {
-        todo!()
+        tools::list()
     }
-}
-
-/// Serves MCP on stdin/stdout until stdin closes.
-pub fn serve_stdio(_session: Session) -> std::io::Result<()> {
-    todo!()
-}
-
-/// Serves MCP streamable HTTP on 127.0.0.1:`port` at `/mcp`, requiring `Authorization: Bearer <token>`.
-pub fn serve_http(_session: Session, _port: u16, _token: String) -> std::io::Result<()> {
-    todo!()
 }

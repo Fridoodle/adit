@@ -92,8 +92,8 @@ fn t_new_fps_strings_and_options() {
     }
     // Missing name.
     call_err(&s, "project_new", json!({}));
-    // A failed project_new opens nothing.
-    assert_eq!(list(&s).len(), 0);
+    // A failed project_new opens nothing: only the 6 valid projects from the loop are open.
+    assert_eq!(list(&s).len(), 6);
 }
 
 // ---------------------------------------------------------------- T-3 ids

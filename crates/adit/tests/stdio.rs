@@ -300,7 +300,7 @@ fn binary_adit_media_pattern_mode() {
     assert_eq!(media["audio"]["channels"], 2);
     let mid = media["id"].as_u64().unwrap();
     m.ok("edit", json!({ "project_id": pid, "commands": [
-        { "op": "add_clip", "track_id": tracks[0], "linked_track_id": tracks[1],
+        { "op": "add_clip", "track_id": tracks[0], "linked_track_id": tracks[2],
           "source": { "type": "media", "media_id": mid }, "start": 0, "duration": "1s", "source_in": "10f" }] }));
     // 5f into the clip -> Pattern frame 15: pixel (x, y) = (x, y, 15).
     let r = m.ok(
