@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsStr;
 use std::io::Read;
 use std::process::ChildStdout;
+use std::sync::mpsc::{Receiver, sync_channel};
 use std::sync::{Arc, Mutex};
 
 use crate::probe::Info;
@@ -95,7 +96,12 @@ impl Frames {
                 f.reader = Some(Reader::spawn(ffmpeg, path, info, seek_from.unwrap_or(n))?);
             }
             let r = f.reader.as_mut().expect("reader just ensured");
-            if let Some(rgba) = r.read_to(n)? {
+            let read = r.read_to(n);
+            if read.is_err() {
+                // Its thread has ended; the next request must start a new reader.
+                f.reader = None;
+            }
+            if let Some(rgba) = read? {
                 let a = frame(rgba);
                 lock(&self.cache).insert(key, a.clone());
                 return Ok(a);
@@ -147,12 +153,12 @@ fn decode_still(ffmpeg: &OsStr, path: &str, info: &Info) -> Result<Vec<u8>, Medi
 
 /// ffmpeg decoding from frame `start` onwards, one raw RGBA frame after another on stdout.
 struct Reader {
-    stdout: ChildStdout,
+    /// Frames a thread has read ahead; the read error (EOF at the end) comes last.
+    frames: Receiver<std::io::Result<Vec<u8>>>,
     proc: Proc,
     start: i64,
     /// Index of the next frame on stdout.
     next: i64,
-    len: usize,
 }
 
 impl Reader {
@@ -186,27 +192,52 @@ impl Reader {
             .args(["-f", "rawvideo", "-pix_fmt", "rgba", "-"]);
         let mut proc = Proc::spawn(c)?;
         let stdout = proc.child.stdout.take().expect("stdout is piped");
+        let len = frame_len(info);
         Ok(Reader {
-            stdout,
+            frames: read_ahead(stdout, len),
             proc,
             start,
             next: start,
-            len: frame_len(info),
         })
     }
 
     /// Reads forward to frame `n` (needs `next <= n`); `None` at end of stream.
     fn read_to(&mut self, n: i64) -> Result<Option<Vec<u8>>, MediaError> {
-        let mut buf = vec![0u8; self.len];
+        let mut last = None;
         while self.next <= n {
-            match self.stdout.read_exact(&mut buf) {
-                Ok(()) => self.next += 1,
-                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-                Err(e) => return Err(MediaError::Io(format!("reading frames: {e}"))),
+            match self.frames.recv() {
+                Ok(Ok(buf)) => {
+                    self.next += 1;
+                    last = Some(buf);
+                }
+                Ok(Err(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+                Ok(Err(e)) => return Err(MediaError::Io(format!("reading frames: {e}"))),
+                Err(_) => return Err(MediaError::Io("frame reader already failed".into())),
             }
         }
-        Ok(Some(buf))
+        last.map(Some)
+            .ok_or_else(|| MediaError::Io(format!("frame {n} is behind the reader")))
     }
+}
+
+/// Frames of `len` bytes from `out`, read on a thread one ahead, so ffmpeg decodes the next frame
+/// while the caller renders this one instead of blocking on a full pipe.
+// shortcut: an idle reader holds up to 2 frames outside the LRU cap (~66 MB at 4K) and readers
+// are never reaped; count them in the cap if many 4K files are open at once.
+fn read_ahead(mut out: ChildStdout, len: usize) -> Receiver<std::io::Result<Vec<u8>>> {
+    let (tx, rx) = sync_channel(1);
+    std::thread::spawn(move || {
+        loop {
+            let mut buf = vec![0u8; len];
+            let r = out.read_exact(&mut buf).map(|()| buf);
+            let end = r.is_err();
+            // A dropped reader (seek, file closed) ends the thread; killing ffmpeg ends the read.
+            if tx.send(r).is_err() || end {
+                return;
+            }
+        }
+    });
+    rx
 }
 
 /// Least recently used frames, bounded by total pixel bytes (the newest entry always stays).

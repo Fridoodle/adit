@@ -1,12 +1,15 @@
 //! Compositing (SPEC V-1..V-9): tracks, clip layers, effects, transitions.
 
-use crate::builtins::{self, BLEND, MIX, TRANSFORM};
+use crate::builtins::{self, BLEND, BLUR_1D, MIX, TRANSFORM};
 use crate::effects;
 use crate::gpu::CtxVals;
 use crate::{RenderError, Renderer};
 use adit_core::*;
 use adit_media::MediaBackend;
 use wgpu::{CommandEncoder, Texture};
+
+/// Text layers kept between frames; a title sequence shows a handful at a time.
+const TEXT_CACHE: usize = 4;
 
 pub(crate) fn secs(t: Time) -> f64 {
     t as f64 / FLICKS_PER_SECOND as f64
@@ -184,15 +187,25 @@ impl Renderer {
         }
     }
 
+    /// The enabled effects with their definitions; `true` = a built-in (no project effect of that
+    /// name, E-3), so the renderer may run it its own way (E-BLUR-1).
     fn clip_effects<'c>(
         &self,
         project: &Project,
         clip: &'c Clip,
-    ) -> Result<Vec<(EffectDef, &'c EffectInstance)>, RenderError> {
+    ) -> Result<Vec<(EffectDef, &'c EffectInstance, bool)>, RenderError> {
+        let filter = EffectKind::Filter;
         clip.effects
             .iter()
             .filter(|e| e.enabled)
-            .map(|e| Ok((self.lookup(project, &e.effect, EffectKind::Filter)?, e)))
+            .map(|e| {
+                let def = self.lookup(project, &e.effect, filter)?;
+                let ours = project
+                    .effects
+                    .iter()
+                    .any(|d| d.name == e.effect && d.kind == filter);
+                Ok((def, e, !ours))
+            })
             .collect()
     }
 
@@ -203,13 +216,13 @@ impl Renderer {
         seq: &Sequence,
         clip: &Clip,
         time: Time,
-        defs: &[(EffectDef, &EffectInstance)],
+        defs: &[(EffectDef, &EffectInstance, bool)],
         mut img: Texture,
     ) -> Result<Texture, RenderError> {
         let local = time - clip.start;
         let frame = time_to_frame(time, seq.fps) as f32;
         let empty = self.gpu.empty.clone();
-        for (def, inst) in defs {
+        for (def, inst, builtin) in defs {
             let params: Vec<f32> = def
                 .params
                 .iter()
@@ -220,6 +233,13 @@ impl Renderer {
                 })
                 .collect();
             let size = (img.width(), img.height());
+            if *builtin && def.name == "gaussian_blur" {
+                // Two passes of 2r+1 taps instead of (2r+1)^2: r = 24 at 1080p was 190 ms a frame.
+                let r = params[0];
+                img = self.internal(enc, &BLUR_1D, [&img, &empty], &[r, 1.0, 0.0], size)?;
+                img = self.internal(enc, &BLUR_1D, [&img, &empty], &[r, 0.0, 1.0], size)?;
+                continue;
+            }
             let ctx: CtxVals = [
                 size.0 as f32,
                 size.1 as f32,
@@ -270,10 +290,24 @@ impl Renderer {
                     .fill(enc, seq.width, seq.height, color.map(f64::from))?
             }
             ClipSource::Text { text } => {
-                // Before the CPU buffer, so an oversized sequence is an error, not an allocation.
-                self.gpu.check_size(seq.width, seq.height)?;
-                let rgba = self.fonts.render(text, seq.width, seq.height);
-                self.gpu.upload(&rgba, seq.width, seq.height)?
+                let (w, h) = (seq.width, seq.height);
+                let hit = self
+                    .texts
+                    .iter()
+                    .position(|e| e.0 == *text && (e.1, e.2) == (w, h));
+                if let Some(i) = hit {
+                    self.texts[i].3.clone()
+                } else {
+                    // Before the CPU buffer, so an oversized sequence is an error, not an allocation.
+                    self.gpu.check_size(w, h)?;
+                    let tex = self.gpu.upload(&self.fonts.render(text, w, h), w, h)?;
+                    // Rasterising and uploading a full-frame layer every frame halves playback speed.
+                    if self.texts.len() >= TEXT_CACHE {
+                        self.texts.remove(0);
+                    }
+                    self.texts.push((text.clone(), w, h, tex.clone()));
+                    tex
+                }
             }
             ClipSource::Sequence { sequence_id } => {
                 // validate() caps nesting (H-4), but an unvalidated project must not recurse
@@ -285,10 +319,19 @@ impl Renderer {
                     .sequence(*sequence_id)
                     .ok_or(RenderError::SequenceNotFound(*sequence_id))?;
                 let t = clip.source_time(time);
-                self.nest += 1;
-                let r = self.render_seq(enc, project, nested, t, media, [0.0; 4]);
-                self.nest -= 1;
-                r?
+                // The same nested sequence on several tracks (blurred backdrop + sharp copy) is
+                // composited once per frame.
+                let key = (*sequence_id, t, self.nest);
+                if let Some(tex) = self.nested.get(&key) {
+                    tex.clone()
+                } else {
+                    self.nest += 1;
+                    let r = self.render_seq(enc, project, nested, t, media, [0.0; 4]);
+                    self.nest -= 1;
+                    let tex = r?;
+                    self.nested.insert(key, tex.clone());
+                    tex
+                }
             }
             // shortcut: an adjustment clip as a transition side draws nothing.
             ClipSource::Adjustment => return Ok(None),

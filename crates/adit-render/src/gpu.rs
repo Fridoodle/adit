@@ -19,6 +19,10 @@ pub(crate) struct Gpu {
     /// Keyed by the full shader source; holds the compile error too so a bad shader fails fast.
     pipelines: HashMap<String, Result<wgpu::RenderPipeline, String>>,
     max_dim: u32,
+    /// Render targets handed out by `pass`/`fill` since the last `recycle`.
+    used: Vec<wgpu::Texture>,
+    /// Last frame's render targets, free to draw into again.
+    free: Vec<wgpu::Texture>,
 }
 
 fn gpu_err(e: impl std::fmt::Display) -> RenderError {
@@ -87,6 +91,8 @@ impl Gpu {
             pipeline_layout,
             pipelines: HashMap::new(),
             max_dim: limits.max_texture_dimension_2d,
+            used: Vec::new(),
+            free: Vec::new(),
         };
         gpu.empty = gpu.upload(&[0; 4], 1, 1)?;
         Ok(gpu)
@@ -102,6 +108,27 @@ impl Gpu {
         let oom = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let val = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
         Scope { val, oom }
+    }
+
+    /// Frame boundary: the render targets of the previous frame become reusable. Fresh 8 MB
+    /// targets every pass made the driver allocate and zero ~200 MB a frame, doubling frame time
+    /// on an integrated GPU. Callers must not keep a `pass`/`fill` texture across this call.
+    pub fn recycle(&mut self) {
+        self.free = std::mem::take(&mut self.used);
+    }
+
+    /// A `w`x`h` render target, reused from the previous frame when one of that size is free.
+    fn target(&mut self, w: u32, h: u32) -> wgpu::Texture {
+        let tex = match self
+            .free
+            .iter()
+            .position(|t| (t.width(), t.height()) == (w, h))
+        {
+            Some(i) => self.free.swap_remove(i),
+            None => new_texture(&self.device, w, h),
+        };
+        self.used.push(tex.clone());
+        tex
     }
 
     pub fn check_size(&self, w: u32, h: u32) -> Result<(), RenderError> {
@@ -133,14 +160,14 @@ impl Gpu {
 
     /// New `w`x`h` texture filled with `color` (straight RGBA 0..1).
     pub fn fill(
-        &self,
+        &mut self,
         enc: &mut wgpu::CommandEncoder,
         w: u32,
         h: u32,
         color: [f64; 4],
     ) -> Result<wgpu::Texture, RenderError> {
         self.check_size(w, h)?;
-        let tex = new_texture(&self.device, w, h);
+        let tex = self.target(w, h);
         let [r, g, b, a] = color.map(|c| c.clamp(0.0, 1.0));
         let view = tex.create_view(&Default::default());
         enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -221,6 +248,7 @@ impl Gpu {
     ) -> Result<wgpu::Texture, RenderError> {
         self.check_size(out.0, out.1)?;
         self.pipeline(source)?;
+        let tex = self.target(out.0, out.1);
         let pipeline = self.pipelines[source].as_ref().expect("built above");
         let buffer = |vals: &[f32]| {
             // Uniform bindings are padded to 16 bytes; an empty params struct still has one field.
@@ -257,7 +285,6 @@ impl Gpu {
                 },
             ],
         });
-        let tex = new_texture(&self.device, out.0, out.1);
         let view = tex.create_view(&Default::default());
         let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {

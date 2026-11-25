@@ -214,8 +214,8 @@ fn effect(uv: vec2f) -> vec4f {
         "gaussian_blur",
         Filter,
         &[("radius", 4.0)],
-        // shortcut: single-pass O(r^2) kernel capped at 24 px; split into two 1-D passes if big
-        // radii are needed at video resolutions.
+        // The renderer runs this as two 1-D passes (BLUR_1D, E-BLUR-1); this 2-D source is the
+        // reference a project copy gets. Kernel capped at 24 px.
         "fn effect(uv: vec2f) -> vec4f {
     let r = min(p.radius, 24.0);
     if (r <= 0.0) { return src(uv); }
@@ -503,6 +503,32 @@ pub(crate) const SCALE: Spec = (
     "fn effect(uv: vec2f) -> vec4f {
     let h = 0.5 / vec2f(textureDimensions(adit_tex_a));
     return src(clamp(uv, h, 1.0 - h));
+}",
+);
+
+/// E-BLUR-1: one 1-D pass of the built-in `gaussian_blur` kernel along (dx, dy); run along x then
+/// y it equals the 2-D source. Radius cap and sigma must stay in step with `gaussian_blur`.
+pub(crate) const BLUR_1D: Spec = (
+    "adit_blur_1d",
+    Filter,
+    &[("radius", 0.0), ("dx", 0.0), ("dy", 0.0)],
+    "fn effect(uv: vec2f) -> vec4f {
+    let r = min(p.radius, 24.0);
+    if (r <= 0.0) { return src(uv); }
+    let n = i32(ceil(r));
+    let sigma = max(r / 2.0, 0.5);
+    let d = vec2f(p.dx, p.dy) / ctx.size;
+    var acc = vec4f(0.0);
+    var wsum = 0.0;
+    for (var i = -n; i <= n; i++) {
+        let w = exp(-f32(i * i) / (2.0 * sigma * sigma));
+        let c = src(uv + f32(i) * d);
+        acc += vec4f(c.rgb * c.a, c.a) * w;
+        wsum += w;
+    }
+    let m = acc / wsum;
+    if (m.a <= 0.0) { return vec4f(0.0); }
+    return vec4f(m.rgb / m.a, m.a);
 }",
 );
 
