@@ -202,6 +202,9 @@ impl Project {
             if !c.speed.is_finite() || c.speed <= 0.0 || c.source_in < 0 {
                 return Err(format!("I3: clip {} has bad speed or source_in", c.id));
             }
+            if c.label > 8 {
+                return Err(format!("C-LABEL-1: clip {} has label > 8", c.id));
+            }
             for l in c.link.iter().chain(&c.group) {
                 if *l >= self.next_id || ids.contains(l) {
                     return Err(format!("I2: clip {} link/group id {l} invalid", c.id));

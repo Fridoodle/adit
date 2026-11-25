@@ -1248,7 +1248,126 @@ fn run(p: &mut Project, cmd: Command, out: &mut Vec<Id>) -> R {
                 shift(p, si, old_end, d)?;
             }
         }
-        PasteClips { .. } => todo!("C-PASTE-1"),
+        PasteClips { items, mode } => {
+            if items.is_empty() || mode == PlaceMode::Insert {
+                return bad("paste needs items and mode place or overwrite");
+            }
+            let (si, _) = track_ix(p, items[0].track_id)?;
+            let own = p.sequences[si].id;
+            // shortcut: each item is compared with every earlier item and every clip of its
+            // track; sort per track if pastes of many thousand clips get slow.
+            for (i, it) in items.iter().enumerate() {
+                let c = &it.clip;
+                let (tsi, ti) = track_ix(p, it.track_id)?;
+                if tsi != si {
+                    return bad("tracks belong to more than one sequence");
+                }
+                unlocked(p, it.track_id)?;
+                let track = &p.sequences[si].tracks[ti];
+                if !fits(p, track.kind, &c.source)? {
+                    return Err(Error::KindMismatch("source does not fit track kind".into()));
+                }
+                if let ClipSource::Sequence { sequence_id } = c.source
+                    && (sequence_id == own || reaches(p, sequence_id, own))
+                {
+                    return Err(Error::NestCycle { sequence_id });
+                }
+                if c.start < 0 || c.duration <= 0 || !end_ok(c) {
+                    return bad("negative start, non-positive duration or end beyond MAX_TIME");
+                }
+                upto(c.source_in)?;
+                if !(0.01..=100.0).contains(&c.speed) || c.label > 8 {
+                    return bad("speed or label out of range");
+                }
+                if c.params
+                    .keys()
+                    .any(|n| CLIP_PARAMS.iter().all(|(k, _)| k != n))
+                {
+                    return bad("unknown clip property");
+                }
+                if c.effects.iter().any(|e| e.effect.is_empty()) {
+                    return bad("empty effect name");
+                }
+                let effect_params = c.effects.iter().flat_map(|e| e.params.values());
+                for pm in c.params.values().chain(effect_params) {
+                    fin(pm.value)?;
+                    for k in &pm.keyframes {
+                        fin(k.value)?;
+                        within(k.time)?;
+                    }
+                    if !pm.keyframes.windows(2).all(|w| w[0].time < w[1].time) {
+                        return bad("keyframes not sorted with unique times");
+                    }
+                }
+                match &c.source {
+                    ClipSource::Text { text } => {
+                        fin(text.size)?;
+                        text.color.iter().try_for_each(|x| fin(*x as f64))?;
+                    }
+                    ClipSource::Solid { color } => {
+                        color.iter().try_for_each(|x| fin(*x as f64))?;
+                    }
+                    _ => {}
+                }
+                if !bounds_ok(p, c) {
+                    // C-PASTE-2: the id this copy would get.
+                    return Err(Error::SourceOutOfRange {
+                        clip_id: p.next_id + i as Id,
+                    });
+                }
+                let hits = |o: &Clip| o.start < c.end() && c.start < o.end();
+                let earlier = items[..i].iter().filter(|o| o.track_id == it.track_id);
+                if earlier.map(|o| &o.clip).any(hits)
+                    || (mode == PlaceMode::Place && track.clips.iter().any(hits))
+                {
+                    return Err(Error::Overlap {
+                        track_id: it.track_id,
+                    });
+                }
+            }
+            let nests = items
+                .iter()
+                .any(|it| matches!(it.clip.source, ClipSource::Sequence { .. }));
+            // C-PASTE-2 id order: clips, effect instances, links, groups, then splits.
+            let mut new: Vec<(Id, Clip)> =
+                items.into_iter().map(|it| (it.track_id, it.clip)).collect();
+            for (_, c) in &mut new {
+                c.id = alloc(p);
+                out.push(c.id);
+            }
+            for e in new.iter_mut().flat_map(|(_, c)| &mut c.effects) {
+                e.id = alloc(p);
+            }
+            let fields: [fn(&mut Clip) -> &mut Option<Id>; 2] = [|c| &mut c.link, |c| &mut c.group];
+            for field in fields {
+                let mut uses: HashMap<Id, usize> = HashMap::new();
+                for (_, c) in &mut new {
+                    if let Some(v) = *field(c) {
+                        *uses.entry(v).or_default() += 1;
+                    }
+                }
+                let mut fresh: HashMap<Id, Id> = HashMap::new();
+                for (_, c) in &mut new {
+                    let slot = field(c);
+                    *slot = slot
+                        .filter(|v| uses[v] > 1)
+                        .map(|v| *fresh.entry(v).or_insert_with(|| alloc(p)));
+                }
+            }
+            if mode == PlaceMode::Overwrite {
+                for (t, c) in &new {
+                    let (si, ti) = track_ix(p, *t)?;
+                    clear(p, si, ti, c.start, c.end())?;
+                }
+            }
+            for (t, c) in new {
+                let (si, ti) = track_ix(p, t)?;
+                p.sequences[si].tracks[ti].clips.push(c);
+            }
+            if nests && too_deep(p) {
+                return bad("sequences nested deeper than MAX_NEST_DEPTH");
+            }
+        }
         SetClip {
             clip_id,
             name,
@@ -1256,9 +1375,13 @@ fn run(p: &mut Project, cmd: Command, out: &mut Vec<Id>) -> R {
             reverse,
             blend,
             audio_filter,
-            label: _, // stub: C-LABEL-1 not implemented yet
+            label,
         } => {
+            if label.is_some_and(|n| n > 8) {
+                return bad("label must be 0..=8");
+            }
             let c = clip_mut(p, clip_id)?;
+            c.label = label.unwrap_or(c.label);
             if let Some(x) = name {
                 c.name = x;
             }
