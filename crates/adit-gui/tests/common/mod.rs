@@ -392,4 +392,13 @@ pub const ALL_ACTIONS: &[Action] = &[
     Action::SpeedDialog,
     Action::GainDialog,
     Action::WandPrompt,
+    Action::Copy,
+    Action::Cut,
+    Action::Paste,
+    Action::Unlink,
+    Action::SetLabel(1),
+    Action::CloseGap {
+        track_id: 1,
+        time: 0,
+    },
 ];

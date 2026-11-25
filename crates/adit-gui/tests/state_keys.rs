@@ -120,16 +120,19 @@ fn spec_keymap() -> Vec<(KeyChord, Action)> {
         (k("c", Key::M), Export),
         (k("c", Key::R), SpeedDialog),
         (k("", Key::G), GainDialog),
+        (k("c", Key::C), Copy),
+        (k("c", Key::X), Cut),
+        (k("c", Key::V), Paste),
     ]
 }
 
 #[test]
 fn u_keys_spec_table_is_well_formed() {
-    // Guards the literal table above: 36 full rows of two plus one half row.
+    // Guards the literal table above: 38 full rows of two.
     let spec = spec_keymap();
-    assert_eq!(spec.len(), 73);
+    assert_eq!(spec.len(), 76);
     let chords: HashSet<KeyChord> = spec.iter().map(|(c, _)| *c).collect();
-    assert_eq!(chords.len(), 73);
+    assert_eq!(chords.len(), 76);
 }
 
 #[test]

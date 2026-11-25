@@ -218,6 +218,15 @@ Window:
   `Meters` or `Status`; a click on the panel's title counts. The Requests panel puts `[app]` or
   `[import]` in front of the text of such requests. The AI import dialog closes after `Send`.
   A library effect is listed in the Effects browser as `<name> (library)`.
+- **U-ED-22 Logic clarifications.** U-CLAR's "missing sequence → no ops" also holds for `Paste`;
+  `snap_delta` then returns `delta` as given. `Copy`, `SetLabel` and `CloseGap` leave `ui` unchanged.
+  In `paste`, `base` and `span` are taken over all items, before any is left out; an item whose
+  clip does not fit its track's kind is sent as is and the core rejects the batch. In `snap_delta`
+  "smaller" means the smaller signed value; the rounding of an exact half frame is not specified.
+  `context_menu` on a clip of a locked track or with an unknown clip id → empty, `ui` unchanged;
+  whether `Transitions` is offered never depends on the effect. `Unlink` leaves locked partners
+  alone (U-FIX-1). `transition_at` on a gap returns the batch even if the core will then refuse
+  the `CloseGap` (`RippleBlocked`); the status bar shows it.
 
 ## Session additions (`adit_mcp::Session`)
 
@@ -299,7 +308,8 @@ Window:
   | ^Z | Undo | ^⇧Z | Redo |
   | ^S | Save | ^I | Import |
   | ^M | Export | ^R | SpeedDialog |
-  | G | GainDialog | | |
+  | G | GainDialog | ^C | Copy |
+  | ^X | Cut | ^V | Paste |
 
   Keys act only when no text field has focus.
 
