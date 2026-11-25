@@ -245,6 +245,74 @@ Window:
   (h) `snap_delta` returns without panicking for every `i64` `delta` and `tolerance` (values are
   clamped to `±MAX_TIME` first).
 
+## Timeline navigation (U-NAV-*)
+
+`S` = 705,600,000 flicks per second. `visible_span(ui) = round(view_width * S / px_per_sec)` flicks:
+the time the timeline area shows. All math is f64, rounded to the nearest flick at the end; where
+`px_per_sec` is not a whole number, times in the examples hold within 1 flick and `px_per_sec`
+within 1e-9.
+
+Logic (public in `adit_gui`):
+
+- **U-NAV-1 Zoom at a point.** `zoom_at(ui, factor, anchor: Time)`: `new = clamp(px_per_sec *
+  factor, 1, 2000)`; `scroll = max(0, anchor - round((anchor - scroll) * px_per_sec / new))` with the
+  old `px_per_sec`; then `px_per_sec = new`. The anchor stays at the same screen x (unless the scroll
+  hits 0). `factor` not finite or `<= 0` → `ui` unchanged. Examples (view 1000 px): pps 100, scroll 0,
+  anchor 4 s, factor 2 → pps 200, scroll 2 s. Pps 100, scroll 0, anchor 1 s, factor 0.5 → pps 50,
+  scroll 0. Pps 1500, scroll 10 s, anchor 10 s, factor 2 → pps 2000, scroll 10 s.
+- **U-NAV-2 Zoom bar.** `zoom_bar_total(ui, duration) = max(duration, scroll + visible_span(ui), S)`.
+  `zoom_bar(ui, duration) -> (f64, f64)` = `(scroll / total, (scroll + visible_span) / total)`, the
+  thumb as fractions of the bar. Example: pps 100, view 1000 px (visible 10 s), duration 40 s, scroll
+  5 s → `(0.125, 0.375)`; duration 4 s, scroll 0 → total 10 s → `(0, 1)`.
+  `bar_grab(ui, duration, part: BarPart) -> BarGrab` records `part` (`Thumb`, `Start`, `End`) and, at
+  that moment, `scroll`, `visible = visible_span(ui)` and `total = zoom_bar_total(ui, duration)`
+  (public fields of the same names). `bar_drag(ui, &grab, d)`: `d` is the pointer's movement since the
+  press as a fraction of the bar's width (any sign); `dt = round(d * total)`, `end0 = grab.scroll +
+  grab.visible`. The result depends only on `grab`, `d` and `ui.view_width`, so calling it every frame
+  with the growing `d` is the same as calling it once.
+  - `Thumb`: `scroll = clamp(grab.scroll + dt, 0, max(0, total - visible))`; `px_per_sec` unchanged.
+  - `Start` (right end fixed): `start = clamp(grab.scroll + dt, 0, end0 - 1)`; `px_per_sec =
+    clamp(view_width * S / (end0 - start), 1, 2000)`; `scroll = max(0, end0 - visible_span(ui))` with
+    the new `px_per_sec`.
+  - `End` (left end fixed): `end = max(end0 + dt, grab.scroll + 1)`; `px_per_sec = clamp(view_width *
+    S / (end - grab.scroll), 1, 2000)`; `scroll = grab.scroll`.
+  Examples, grab at pps 100, view 1000 px, scroll 5 s, duration 40 s (visible 10 s, total 40 s, end0
+  15 s): `Thumb` d 0.25 → scroll 15 s; d 1 → 30 s; d -0.5 → 0. `Start` d -0.125 → pps 1000/15,
+  scroll 0; d 0.125 → pps 200, scroll 10 s; d 1 → pps 2000, scroll 14.5 s. `End` d 0.25 → pps 50,
+  scroll 5 s; d -0.25 → pps 2000, scroll 5 s; d 100 → pps 1, scroll 5 s.
+
+Window:
+
+- **U-NAV-3 Zoom bar strip.** Below the track rows the Timeline panel has a strip 14 px high from the
+  header's right edge to the panel's right edge, with accessible label `Zoom bar`. The rows end above
+  it; its height is fixed, so U-FIX-7 still holds. The thumb is drawn from `left + a * W` to `left +
+  b * W` (`(a, b) = zoom_bar(..)` with the sequence duration, `W` the strip width), at least 16 px
+  wide. A primary press inside the drawn thumb less than 6 px from its left end grabs `Start`, less
+  than 6 px from its right end `End`, elsewhere `Thumb` (`bar_grab` at press); a press on the strip
+  outside the thumb does nothing. While dragged, each frame applies `bar_drag(ui, grab, dx / W)`,
+  `dx` = pointer x − press x. Nothing in the project changes.
+- **U-NAV-4 Wheel.** Over the timeline area (right of the headers), wheel with Ctrl or Alt held
+  zooms: `zoom_at(ui, 1.1, t)` for each frame with a positive vertical scroll, `zoom_at(ui, 1 / 1.1,
+  t)` for a negative one, `t` = the unsnapped `x_to_time` of the pointer, so the time under the
+  pointer stays under it (within one pixel). Plain wheel scrolls the tracks vertically when they
+  overflow, else the time; Shift + wheel scrolls the time (as before).
+- **U-NAV-5 Drag to pan.** These drags pan the view live instead of editing: a primary drag with
+  tool `Select` that starts on `Empty` space of a track row, a primary drag with tool `Hand` that
+  starts anywhere in the track rows, and a middle-button drag with any tool that starts anywhere in
+  the track rows (also on a clip). With press point `p0`, and `scroll0`, `sy0` (vertical track
+  scroll) at the press, each frame sets `scroll = max(0, scroll0 - round((x - p0.x) * S /
+  px_per_sec))` and the vertical track scroll to `clamp(sy0 - (y - p0.y), 0, max)`. Release does
+  nothing more: no command, no undo step, selection and playhead unchanged. A middle-button press
+  never edits. A `Select` click (no drag) on empty space still empties the selection (U-DRAG-SEL).
+  `drag` keeps U-DRAG-VIEW for its other callers; the window does not pass these gestures to it.
+- **U-NAV-6 Trim by default.** The window's `edge_px` is 8. With tool `Select` (the default), a
+  primary drag that starts within 8 px inside a clip's start or end (U-GEO-3) trims it (U-DRAG-TRIM,
+  `mode` normal); it never moves the clip. While the pointer hovers an edge zone where a drag would
+  trim (`Select`, `Ripple`, `Roll` on either edge, `RateStretch` on `EndEdge`) the cursor is the
+  horizontal-resize cursor. Example: clip `[1 s, 3 s)` on V1 at 100 px/s, scroll 0, 30 fps, snapping
+  on and nothing else nearby: press 7 px left of its end (2.93 s), release 50 px right (3.43 s) →
+  end at frame 103 (3.4333 s), start unchanged, one undo step.
+
 ## Session additions (`adit_mcp::Session`)
 
 - **S-1** `projects()` lists open projects in opening order with `revision`. `revision(id)` grows by
