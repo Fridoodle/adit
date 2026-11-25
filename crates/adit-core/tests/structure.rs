@@ -736,3 +736,118 @@ fn c_fx_1_core_does_not_check_effect_names() {
     );
     assert_eq!(clip(doc.project(), c).effects.len(), 2);
 }
+
+// --- zero / negative fields, one at a time, inside a batch ---
+// The final validate() would also reject the bad value, so each bad command is followed in the
+// batch by one that repairs it: only the command's own check (C-BATCH-1: first Err fails the
+// batch) can make the batch fail.
+
+#[test]
+fn c_seq_1_c_batch_1_each_zero_field_fails_even_if_repaired_later() {
+    let fix = |fps: Option<Rational>, w: Option<u32>, h: Option<u32>, sr: Option<u32>| {
+        Command::SetSequence {
+            sequence_id: 1, // the sequence the batch's AddSequence creates
+            name: None,
+            width: w,
+            height: h,
+            fps,
+            sample_rate: sr,
+        }
+    };
+    for (bad, repair) in [
+        (
+            add_seq(0, 720, FPS24, 48000, 0, 0),
+            fix(None, Some(1280), None, None),
+        ),
+        (
+            add_seq(1280, 0, FPS24, 48000, 0, 0),
+            fix(None, None, Some(720), None),
+        ),
+        (
+            add_seq(1280, 720, FPS24, 0, 0, 0),
+            fix(None, None, None, Some(48000)),
+        ),
+        (
+            add_seq(1280, 720, Rational { num: 0, den: 1 }, 48000, 0, 0),
+            fix(Some(FPS24), None, None, None),
+        ),
+        (
+            add_seq(1280, 720, Rational { num: 24, den: 0 }, 48000, 0, 0),
+            fix(Some(FPS24), None, None, None),
+        ),
+    ] {
+        let mut doc = Document::new(Project::new("p"));
+        assert_err!(
+            &mut doc,
+            Command::Batch {
+                commands: vec![bad, repair]
+            },
+            Error::InvalidArgument(_)
+        );
+    }
+}
+
+#[test]
+fn c_seq_3_c_batch_1_each_zero_value_fails_even_if_repaired_later() {
+    let Base { fx, seq, .. } = base();
+    let mut doc = fx.doc();
+    let set = |w: Option<u32>, h: Option<u32>, fps: Option<Rational>, sr: Option<u32>| {
+        Command::SetSequence {
+            sequence_id: seq,
+            name: None,
+            width: w,
+            height: h,
+            fps,
+            sample_rate: sr,
+        }
+    };
+    for (bad, repair) in [
+        (
+            set(Some(0), None, None, None),
+            set(Some(1920), None, None, None),
+        ),
+        (
+            set(None, Some(0), None, None),
+            set(None, Some(1080), None, None),
+        ),
+        (
+            set(None, None, None, Some(0)),
+            set(None, None, None, Some(48000)),
+        ),
+        (
+            set(None, None, Some(Rational { num: 0, den: 1 }), None),
+            set(None, None, Some(FPS24), None),
+        ),
+        (
+            set(None, None, Some(Rational { num: 24, den: 0 }), None),
+            set(None, None, Some(FPS24), None),
+        ),
+    ] {
+        assert_err!(
+            &mut doc,
+            Command::Batch {
+                commands: vec![bad, repair]
+            },
+            Error::InvalidArgument(_)
+        );
+    }
+}
+
+#[test]
+fn c_mark_1_g6_c_batch_1_negative_time_or_duration_fails_even_if_removed_later() {
+    let Base { fx, seq, .. } = base();
+    let mut doc = fx.doc();
+    // base() has next_id 10, so the marker would get id 10
+    for (time, duration) in [(-1, 0), (0, -1)] {
+        assert_err!(
+            &mut doc,
+            Command::Batch {
+                commands: vec![
+                    marker(seq, time, duration, ""),
+                    Command::RemoveMarker { marker_id: 10 }
+                ]
+            },
+            Error::InvalidArgument(_)
+        );
+    }
+}

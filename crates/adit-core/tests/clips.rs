@@ -2315,3 +2315,123 @@ fn c_link_1_errors() {
     );
     let _ = y;
 }
+
+// ============================================================================ boundary cases
+
+#[test]
+fn c_add_6_insert_at_clip_end_does_not_split_it() {
+    // half-open: X [0, 4s) does not cross 4s
+    let Base { mut fx, m, v1, .. } = base();
+    let x = fx.clip(v1, m, 0, 4 * S, 0); // 10
+    let mut doc = fx.doc();
+    let out = ok(
+        &mut doc,
+        AddB {
+            mode: PlaceMode::Insert,
+            ..addb(v1, media_src(m), 4 * S, 2 * S)
+        }
+        .cmd(),
+    );
+    assert_eq!(out.created, vec![11]);
+    assert_eq!(
+        spans(doc.project(), v1),
+        vec![(x, 0, 4 * S), (11, 4 * S, 6 * S)]
+    );
+}
+
+#[test]
+fn c_lift_1_g6_range_from_zero_is_valid() {
+    let Base {
+        mut fx, m, seq, v1, ..
+    } = base();
+    let a = fx.clip(v1, m, 0, 4 * S, 0);
+    let mut doc = fx.doc();
+    ok(&mut doc, lift(seq, 0, S, None));
+    let p = doc.project();
+    assert_eq!(spans(p, v1), vec![(a, S, 4 * S)]);
+    assert_eq!(clip(p, a).source_in, S);
+}
+
+#[test]
+fn c_split_1_g6_time_zero_is_valid_noop() {
+    let SplitFx { b, .. } = split_fx();
+    let seq = b.seq;
+    let mut doc = b.fx.doc();
+    let before = doc.project().clone();
+    let out = ok(
+        &mut doc,
+        Command::SplitAt {
+            sequence_id: seq,
+            time: 0,
+            track_ids: None,
+        },
+    );
+    assert!(out.created.is_empty());
+    assert_eq!(doc.project(), &before);
+}
+
+#[test]
+fn c_split_1_clip_starting_at_time_is_not_split() {
+    // W starts at 7s on V1; Y [0,10s) on V2 crosses 7s; Z on A2 is locked
+    let SplitFx { b, x, w, .. } = split_fx();
+    let (seq, v1, v2) = (b.seq, b.v1, b.v2);
+    let mut doc = b.fx.doc();
+    let out = ok(
+        &mut doc,
+        Command::SplitAt {
+            sequence_id: seq,
+            time: 7 * S,
+            track_ids: None,
+        },
+    );
+    let p = doc.project();
+    assert_eq!(out.created.len(), 1);
+    assert_eq!(track_of(p, out.created[0]), v2);
+    assert_eq!(spans(p, v1), vec![(x, 2 * S, 6 * S), (w, 7 * S, 8 * S)]);
+}
+
+#[test]
+fn c_split_2_partners_touching_time_are_not_split() {
+    // X [0,4s) on V1 linked to P [2s,4s) on A1 (starts at 2s) and Q [0,2s) on A2 (ends at 2s)
+    let Base {
+        mut fx,
+        m,
+        v1,
+        a1,
+        a2,
+        ..
+    } = base();
+    let x = fx.clip(v1, m, 0, 4 * S, 0);
+    let p_ = fx.clip(a1, m, 2 * S, 2 * S, 0);
+    let q = fx.clip(a2, m, 0, 2 * S, 0);
+    fx.link(&[x, p_, q]);
+    let mut doc = fx.doc();
+    let out = ok(
+        &mut doc,
+        Command::SplitClip {
+            clip_id: x,
+            time: 2 * S,
+            include_linked: true,
+        },
+    );
+    let p = doc.project();
+    assert_eq!(out.created.len(), 1);
+    assert_eq!(track_of(p, out.created[0]), v1);
+    assert_eq!(spans(p, a1), vec![(p_, 2 * S, 4 * S)]);
+    assert_eq!(spans(p, a2), vec![(q, 0, 2 * S)]);
+}
+
+#[test]
+fn c_move_1_g6_move_to_zero_is_valid() {
+    let Base {
+        mut fx, m, v1, a1, ..
+    } = base();
+    let x = fx.clip(v1, m, 3 * S, 2 * S, 0);
+    let xa = fx.clip(a1, m, 3 * S, 2 * S, 0);
+    fx.link(&[x, xa]);
+    let mut doc = fx.doc();
+    ok(&mut doc, mv(x, 0, None, PlaceMode::Place, true));
+    let p = doc.project();
+    assert_eq!(spans(p, v1), vec![(x, 0, 2 * S)]);
+    assert_eq!(spans(p, a1), vec![(xa, 0, 2 * S)]);
+}
