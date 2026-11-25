@@ -1,4 +1,4 @@
-//! `adit` binary: `adit mcp`, `adit serve`, `adit render`. Contract: docs/MCP_TOOLS.md "Binary".
+//! `adit` binary: `adit mcp`, `adit serve`, `adit gui`, `adit render`. Contract: docs/MCP_TOOLS.md "Binary", docs/GUI.md "Binary".
 
 use adit_core::{FLICKS_PER_SECOND, Project, Rational};
 use adit_mcp::Session;
@@ -11,6 +11,7 @@ use std::sync::atomic::AtomicBool;
 const USAGE: &str = "usage:
   adit mcp                         MCP server on stdio
   adit serve [--port N]            MCP server over HTTP on 127.0.0.1:N (default 7821); token from env ADIT_TOKEN or random
+  adit gui [project.adit] [--port N] editor window; also serves MCP over HTTP like `adit serve`
   adit render <project.adit> -o <out> [--sequence ID] [--codec h264|h265|prores|gif]
   adit --help
 env: ADIT_MEDIA=pattern uses a procedural 64x64 30 fps 10 s media backend instead of ffmpeg";
@@ -76,6 +77,7 @@ fn main() -> ExitCode {
                 adit_mcp::serve_http(s, port, token).map_err(|e| e.to_string())
             })
         }
+        ["gui", ref rest @ ..] => gui(rest),
         ["render", ref rest @ ..] => render(rest),
         [other, ..] => usage(&format!("unknown command {other:?}")),
     }
@@ -83,6 +85,54 @@ fn main() -> ExitCode {
 
 fn run_server(f: impl FnOnce(Session) -> Result<(), String>) -> ExitCode {
     match backend().and_then(|b| f(Session::new(b))) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => fail(e),
+    }
+}
+
+/// `adit gui [project.adit] [--port N]` (docs/GUI.md "Binary").
+fn gui(args: &[&str]) -> ExitCode {
+    let (mut open, mut port) = (None, 7821u16);
+    let mut it = args.iter();
+    while let Some(&a) = it.next() {
+        match a {
+            "--port" => match it.next().map(|p| p.parse::<u16>()) {
+                Some(Ok(p)) => port = p,
+                Some(Err(_)) => return usage("invalid port"),
+                None => return usage("--port needs a value"),
+            },
+            _ if a.starts_with('-') => return usage(&format!("unknown option {a:?}")),
+            _ if open.is_none() => open = Some(a.to_string()),
+            _ => return usage(&format!("unexpected argument {a:?}")),
+        }
+    }
+    let session = match backend() {
+        Ok(b) => Session::new(b),
+        Err(e) => return fail(e),
+    };
+    let token = match token() {
+        Ok(t) => t,
+        Err(e) => return fail(e),
+    };
+    // serve_http returns only on a bind failure; no answer within the wait means it is serving.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (s2, t2) = (session.clone(), token.clone());
+    std::thread::spawn(move || {
+        let _ = tx.send(adit_mcp::serve_http(s2, port, t2));
+    });
+    let mcp_url = match rx.recv_timeout(std::time::Duration::from_millis(500)) {
+        Ok(Err(e)) => {
+            eprintln!("adit: MCP is off: cannot serve on port {port}: {e}");
+            None
+        }
+        _ => Some(format!("http://127.0.0.1:{port}/mcp")),
+    };
+    let options = adit_gui::Options {
+        open,
+        mcp_token: mcp_url.as_ref().map(|_| token),
+        mcp_url,
+    };
+    match adit_gui::run(session, options) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => fail(e),
     }

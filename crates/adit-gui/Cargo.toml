@@ -8,7 +8,10 @@ adit-core = { path = "../adit-core" }
 adit-media = { path = "../adit-media" }
 adit-mcp = { path = "../adit-mcp" }
 serde_json.workspace = true
-eframe = { version = "0.37", default-features = false, features = ["wgpu", "default_fonts"] }
+eframe = { version = "0.37", default-features = false, features = ["wgpu", "default_fonts", "accesskit", "clipboard"] }
+cpal = "0.18"
+rfd = "0.18"
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [dev-dependencies]
 egui_kittest = { version = "0.37", features = ["eframe", "wgpu"] }
