@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "adit": {
+      "command": "target/release/adit.exe",
+      "args": ["mcp"]
+    }
+  }
+}

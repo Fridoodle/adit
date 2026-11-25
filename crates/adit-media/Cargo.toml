@@ -1,0 +1,10 @@
+[package]
+name = "adit-media"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+adit-core = { path = "../adit-core" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

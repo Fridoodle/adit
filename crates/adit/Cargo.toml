@@ -1,0 +1,19 @@
+[package]
+name = "adit"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+adit-core = { path = "../adit-core" }
+adit-media = { path = "../adit-media" }
+adit-render = { path = "../adit-render" }
+adit-mcp = { path = "../adit-mcp" }
+adit-gui = { path = "../adit-gui" }
+getrandom = "0.3"
+
+[dev-dependencies]
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+serde_json.workspace = true
+tempfile = "3"
+ureq = { version = "2", default-features = false }

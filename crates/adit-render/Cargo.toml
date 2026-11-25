@@ -1,0 +1,13 @@
+[package]
+name = "adit-render"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+ab_glyph = "0.2.32"
+adit-core = { path = "../adit-core" }
+adit-media = { path = "../adit-media" }
+bytemuck = "1.25.2"
+pollster = "1.0.3"
+thiserror.workspace = true
+wgpu = "30.0.2"

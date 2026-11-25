@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 88a5dffbde5d16d8451621c07df2499ce4ffb22a576669612b43aa5f21410552 # shrinks to placements = [], start = 0, len = 1
+cc bfe322dab48dac51bd9abba012bf44360b5231bad47a7fbf6bf624d49c7584ef # shrinks to start = 0, dur = 2, src = 0, speed_i = 0, reverse = false, op_kfs = {}, fx_kfs = {}, frac = 0.0, flick_off = 0
+cc b4a2668aaad14bef2743cc4c6ea1ba018f1c4d2c3946e8f3bf271b269c4b2227 # shrinks to ops = [Op { kind: 0, a: 0, b: 0, t1: 0, t2: 0, flag: false }]

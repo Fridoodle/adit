@@ -7,16 +7,44 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **adit** — "Agentic Editor". Rust-based editing software focused on MCP server editing and AI-driven editing.
 Repo: https://github.com/Fridoodle/adit (default branch `main`).
 
-Status: greenfield, no crate yet. Rust stable (rustup, MSVC target, clippy + rustfmt) and VS 2022 C++ Build Tools are installed.
-When the Cargo workspace is created, replace this line with the real build/lint/test commands, e.g.:
+Status: headless engine, MCP server and the Premiere-style window work (milestones 1-4).
+Never exercised by a person yet: real keyboard/mouse in the window, native file dialogs, audio output.
+Needs `ffmpeg` and `ffprobe` on PATH (or env `ADIT_FFMPEG` / `ADIT_FFPROBE`).
 
 ```
 cargo build
-cargo clippy --all-targets -- -D warnings
-cargo fmt --check
-cargo test
-cargo test -p <crate> <test_name>   # single test
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all --check
+cargo test --workspace
+cargo test -p <crate> --test <file> <test_name>   # single test
+cargo mutants -p adit-core --jobs 2 --timeout 120  # mutation check, ~25 min
+cargo run -p adit -- mcp                           # MCP server on stdio (headless)
+cargo run -p adit -- serve --port 7821             # MCP over HTTP on 127.0.0.1, bearer token on stderr
+cargo run -p adit -- gui [project.adit] [--port N] # window + MCP over HTTP in one process
 ```
+
+Crates (`crates/`): `adit-core` (project model, `Command` enum, undo; no IO) → `adit-media` (ffmpeg
+subprocesses) → `adit-render` (wgpu compositor, WGSL effects, audio mix, export) → `adit-mcp`
+(`Session` tool layer, MCP stdio/HTTP) → `adit-gui` (egui window; pure logic in `logic.rs`, widgets
+in `app/`) → `adit` (binary). Every edit, from any client, is a `Command` applied through
+`Document::apply`; the window is just another `Session` client.
+
+To check the window without a person: run `adit gui`, then call the MCP tools `ui_set`, `ui_get`
+and `ui_screenshot` over HTTP and read the PNG. Crop a region before judging small details.
+
+## Contracts and test-first rule
+
+`docs/SPEC.md` (behaviour, rule ids like `C-RIP-1`, `V-7`, `H-6`), `docs/MCP_TOOLS.md` (tools,
+`T-*`) and `docs/GUI.md` (window, `U-*`, `S-*`) are the contract. Tests cite rule ids. Order of work for any behaviour change:
+
+1. Change the spec first.
+2. Tests are written from the spec by an agent that does not see the implementation; expected values
+   are hand-computed literals. Commit tests before the fix.
+3. A different agent implements. Test files are read-only for it; a test it believes wrong is reported
+   and left failing, never edited or worked around. Only the director changes a test, with the reason
+   in the commit message.
+4. Independent review agent, then `cargo mutants` on `adit-core`; surviving mutants go back to the
+   test author.
 
 ## Default working style: caveman + ponytail
 
