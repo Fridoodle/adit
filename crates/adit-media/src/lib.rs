@@ -43,6 +43,9 @@ pub trait MediaBackend: Send + Sync {
     /// The frame shown at source time `time` (clamped into the media).
     fn video_frame(&self, path: &str, time: Time) -> Result<Arc<Frame>, MediaError>;
 
+    /// Hint that `video_frame(path, time)` will be asked for soon (SPEC M-FRAME-5). Best effort.
+    fn prefetch(&self, _path: &str, _time: Time) {}
+
     /// Interleaved stereo f32 at `sample_rate` for the source range `[start, start + duration)`,
     /// passed through the ffmpeg audio filter chain `filter` (empty = none). The length is
     /// whatever the filter chain yields (a tempo filter changes it).

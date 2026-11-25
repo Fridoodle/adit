@@ -123,6 +123,12 @@ impl Renderer {
     }
 }
 
+/// `(path, source time)` of every `video_frame` call rendering `time` makes (SPEC V-11).
+pub fn media_frames(project: &Project, sequence_id: Id, time: Time) -> Vec<(String, Time)> {
+    let _ = (project, sequence_id, time);
+    Vec::new() // stub: tests first
+}
+
 /// The effects shipped with adit (SPEC E-BUILTIN). `wgsl` holds their real source.
 pub fn builtin_effects() -> Vec<EffectDef> {
     builtins::builtin_effects()

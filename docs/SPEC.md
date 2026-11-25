@@ -371,6 +371,17 @@ API: `crates/adit-media/src/lib.rs`. ffmpeg and ffprobe run as subprocesses; not
   asking for the same frame twice returns the same `Arc`.
 - **M-FRAME-4** Alpha: sources without alpha decode with `a = 255`. A PNG with transparency keeps its
   alpha (straight, not premultiplied).
+- **M-FRAME-5 Prefetch.** `MediaBackend::prefetch(path, t)` asks for frame `n = time_to_frame(max(t, 0),
+  fps)` to be ready soon. It returns nothing and never panics; the default implementation does nothing.
+  It changes no later result: `video_frame` returns the same pixels whether or not `prefetch` was
+  called. A missing file, a file without video or a still → nothing happens. `Ffmpeg`: when frame `n`
+  is cached or an open reader of the file can reach it reading forward (at most one second), nothing
+  happens; otherwise a new reader is opened at `n` and frame `n` is decoded into the cache, leaving the
+  readers other callers are using where they are.
+- **M-FRAME-6 Several positions.** A file may have several open readers (at most 4; the least recently
+  used one is closed for a fifth). Reading two positions of one file alternately (`a, b, a+1, b+1, ...`,
+  `b - a` more than two seconds) returns the exact frames (M-FRAME-1) and does not start an ffmpeg
+  process per frame: 40 alternating reads of a 64x64 clip take < 5 s on any machine.
 - **M-AUDIO-1** `audio(path, start, duration, sr, "")` returns interleaved stereo f32 resampled to `sr`,
   mono sources duplicated to both channels, length `2 * round(duration * sr / s)` samples within ±2
   frames, covering source range `[start, start + duration)`. A range past the end of the file yields
@@ -466,6 +477,14 @@ conversion). Pixel tests allow ±2 per 8-bit channel.
 
 ## Effects
 
+- **V-11 Media frames.** `media_frames(project, sequence_id, time) -> Vec<(String, Time)>` lists the
+  `(path, source time)` of every `video_frame` call rendering that time makes: the enabled clip at
+  `time` on each visible video track (inside a transition window, V-9, the enabled clips of both
+  sides, left then right), recursing into nested sequences at the clip's source time (H-4 depth cap),
+  bottom track first, without duplicates (first occurrence kept). The source time is
+  `Clip::source_time(time)` as the renderer passes it, unclamped (a right side sampled before its
+  start can be below its `source_in`). Clips whose media has no video, text, solid and adjustment clips, and
+  references to missing media or sequences contribute nothing; an unknown `sequence_id` → empty.
 - **E-1 Shader contract.** An `EffectDef` of kind `Filter` supplies WGSL containing
   `fn effect(uv: vec2f) -> vec4f`; kind `Transition` supplies `fn transition(uv: vec2f) -> vec4f`.
   `uv` is 0..1 with the origin at the top-left. Values are straight-alpha RGBA. adit prepends:
