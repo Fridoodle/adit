@@ -228,6 +228,23 @@ Window:
   alone (U-FIX-1). `transition_at` on a gap returns the batch even if the core will then refuse
   the `CloseGap` (`RippleBlocked`); the status bar shows it.
 
+- **U-ED-23 Rules added after the review.**
+  (a) An egui cut event that arrives with Shift held and neither Ctrl nor Command (Windows sends
+  Shift+Delete that way) runs `RippleDelete`, not `Cut`; the clipboard is untouched.
+  (b) The drag preview is computed once per change of the gesture (press hit, pointer time, track,
+  modifiers) or project revision, not every frame.
+  (c) Dropped files with no known pointer position are imported at once and placed (U-ED-16) at the
+  first pointer position reported afterwards, if that is over a track.
+  (d) With tool `Wand`, a press on a panel of U-ED-18 reaches no widget of that panel: a double
+  click on an effect in the Effects browser applies nothing and only opens the prompt.
+  (e) The Effects browser re-reads `effect_list` at least every 2 s while it is shown, so library
+  effects saved elsewhere appear.
+  (f) A failed waveform is tried again after the project's revision changes.
+  (g) A paste into a project other than the one the clips were copied from leaves out items whose
+  source is `Media` or `Sequence`; if none is left, nothing is pasted and the status bar says so.
+  (h) `snap_delta` returns without panicking for every `i64` `delta` and `tolerance` (values are
+  clamped to `±MAX_TIME` first).
+
 ## Session additions (`adit_mcp::Session`)
 
 - **S-1** `projects()` lists open projects in opening order with `revision`. `revision(id)` grows by

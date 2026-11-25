@@ -189,6 +189,16 @@ Effects a client defines are kept for every later project, so adit learns new lo
   implementation's choice and an `Err` is not cached. S-5: scaling is the renderer's bilinear
   scale, the one export uses (SPEC X-1).
 
+- **T-LIB-7 Rules added after the review.** A `define_effect` is also not saved (the edit still
+  succeeds, the name is left out of `library`) when its name equals, ignoring case, a Windows
+  device name (`CON`, `PRN`, `AUX`, `NUL`, `COM1`..`COM9`, `LPT1`..`LPT9`), or when the directory
+  already holds a `.json` file whose stem equals the name ignoring case but not exactly (`glow`
+  never replaces `Glow`). Library files larger than 1 MiB (1,048,576 bytes) are skipped by
+  `effect_list` and cannot be used through T-LIB-4. Library files are never read or written while
+  the session's project state is locked; writes of one session happen in edit order.
+  T-EDIT: the `audio_filter` of every `paste_clips` item is checked as `set_clip` checks it
+  (SPEC H-6); a rejected filter fails the `edit` and changes nothing.
+
 ## Library surface (`adit_mcp`)
 
 ```rust
