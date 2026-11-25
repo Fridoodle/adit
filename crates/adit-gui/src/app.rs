@@ -110,6 +110,10 @@ pub struct App {
     playback: playback::Playback,
     /// Timeline gesture in progress: what was under the pointer at press.
     press: Option<crate::Hit>,
+    /// Pan drag in progress (U-NAV-5): tab and sequence, press point, time and track scroll at press.
+    pan: Option<((String, adit_core::Id), egui::Pos2, adit_core::Time, f32)>,
+    /// Zoom-bar drag in progress (U-NAV-3): tab and sequence, press x and the view at press.
+    bar: Option<((String, adit_core::Id), f32, crate::BarGrab)>,
     /// Program-monitor rectangle drawn with the wand, `[x, y, w, h]` in 0..1.
     wand_rect: Option<[f64; 4]>,
     wand_press: Option<egui::Pos2>,
@@ -184,6 +188,8 @@ impl App {
             dialog: None,
             shared: shared.clone(),
             press: None,
+            pan: None,
+            bar: None,
             wand_rect: None,
             wand_press: None,
             requests: Vec::new(),

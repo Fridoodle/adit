@@ -10,7 +10,9 @@ use std::sync::Arc;
 const HEADER: f32 = 150.0;
 const RULER: f32 = 24.0;
 const TRACK: f32 = 44.0;
-const EDGE: f32 = 6.0;
+const EDGE: f32 = 8.0;
+/// Height of the zoom bar under the track rows (U-NAV-3).
+const BAR: f32 = 14.0;
 
 /// Clip colour labels 0..=8 (U-ED-10, U-ED-14); 0 keeps the clip's kind colour.
 const LABELS: [(&str, Color32); 9] = [
@@ -153,12 +155,85 @@ impl App {
             return;
         };
         // Exactly the space left: the track count never changes the panel size (U-FIX-7).
-        let (rect, resp) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
+        let (full, _) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
+        let bottom = (full.bottom() - BAR).max(full.top());
+        let rect = Rect::from_min_max(full.min, pos2(full.right(), bottom));
+        let resp = ui.interact(
+            rect,
+            ui.scope_id().with("timeline"),
+            Sense::click_and_drag(),
+        );
         t.ui.view_width = (rect.width() - HEADER).max(1.0);
-        let lay = layout(&t.ui);
-        let rows = lay.rows(&project, seq.id);
+        let (mods, press_pos, pos, latest) = ui.input(|i| {
+            (
+                i.modifiers,
+                i.pointer.press_origin(),
+                i.pointer.interact_pos(),
+                i.pointer.latest_pos(),
+            )
+        });
+
+        // Zoom bar (U-NAV-3), applied before this frame's layout.
+        let bar_rect = Rect::from_min_max(pos2(full.left() + HEADER, rect.bottom()), full.max);
+        let bar_resp = ui.interact(bar_rect, ui.scope_id().with("zoom bar"), Sense::drag());
+        bar_resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ScrollBar, true, "Zoom bar"));
+        let dur = seq.duration();
+        let key = (t.id.clone(), seq.id);
+        let thumb = |u: &UiState| {
+            let (a, b) = crate::zoom_bar(u, dur);
+            let w = bar_rect.width();
+            let x0 = bar_rect.left() + a as f32 * w;
+            let x1 = (bar_rect.left() + b as f32 * w).max(x0 + 16.0);
+            let over = (x1 - bar_rect.right()).max(0.0);
+            (x0 - over, x1 - over)
+        };
+        if bar_resp.drag_started_by(egui::PointerButton::Primary)
+            && let Some(p) = press_pos
+        {
+            let (x0, x1) = thumb(&t.ui);
+            let part = if p.x < x0 || p.x > x1 {
+                None
+            } else if p.x - x0 < 6.0 {
+                Some(crate::BarPart::Start)
+            } else if x1 - p.x < 6.0 {
+                Some(crate::BarPart::End)
+            } else {
+                Some(crate::BarPart::Thumb)
+            };
+            self.bar = part.map(|part| (key.clone(), p.x, crate::bar_grab(&t.ui, dur, part)));
+        }
+        // A gesture of another tab or sequence (switched mid-drag) is dropped.
+        if self.bar.as_ref().is_some_and(|b| b.0 != key) {
+            self.bar = None;
+        }
+        if self.pan.as_ref().is_some_and(|g| g.0 != key) {
+            self.pan = None;
+        }
+        if let Some((_, x, grab)) = self.bar.clone() {
+            if let Some(p) = pos {
+                let d = (p.x - x) as f64 / bar_rect.width().max(1.0) as f64;
+                crate::bar_drag(&mut t.ui, &grab, d);
+            }
+            if !bar_resp.dragged() {
+                self.bar = None;
+            }
+        }
+
+        let rows = layout(&t.ui).rows(&project, seq.id);
         let rows_rect = Rect::from_min_max(pos2(rect.left(), rect.top() + RULER), rect.max);
         let max_scroll = (rows.len() as f32 * TRACK - rows_rect.height()).max(0.0);
+        // Pan (U-NAV-5), started on an earlier frame, applied before this frame's layout.
+        if let Some((_, p0, scroll0, sy0)) = self.pan.clone() {
+            if let Some(p) = pos {
+                let dt = ((p.x - p0.x) as f64 * S / t.ui.px_per_sec).round() as Time;
+                t.ui.scroll = scroll0.saturating_sub(dt).max(0);
+                self.timeline_scroll_y = (sy0 - (p.y - p0.y)).clamp(0.0, max_scroll);
+            }
+            if !resp.dragged() {
+                self.pan = None;
+            }
+        }
+        let lay = layout(&t.ui);
         let sy = self.timeline_scroll_y.clamp(0.0, max_scroll);
         let x_of = |time: Time| rect.left() + lay.time_to_x(time);
         let row_top = |i: usize| rect.top() + RULER + i as f32 * TRACK - sy;
@@ -171,14 +246,6 @@ impl App {
         let rows_area = area.intersect(rows_rect);
 
         // Mouse gestures (U-APP-4): hit on press, snap, `drag` on release.
-        let (mods, press_pos, pos, latest) = ui.input(|i| {
-            (
-                i.modifiers,
-                i.pointer.press_origin(),
-                i.pointer.interact_pos(),
-                i.pointer.latest_pos(),
-            )
-        });
         let row_at = |y: f32| -> Option<Id> {
             let i = ((y - RULER) / TRACK).floor();
             (y >= RULER && i >= 0.0)
@@ -563,6 +630,55 @@ impl App {
             );
         }
 
+        // Zoom bar: the thumb is the visible range, its ends resize it (U-NAV-3).
+        let bar_painter = ui.painter_at(bar_rect);
+        bar_painter.rect_filled(bar_rect, 0.0, Color32::from_gray(28));
+        let (x0, x1) = thumb(&t.ui);
+        let th = Rect::from_x_y_ranges(x0..=x1, bar_rect.top() + 2.0..=bar_rect.bottom() - 2.0);
+        bar_painter.rect_filled(th, 5.0, Color32::from_gray(80));
+        for cx in [x0 + 3.0, x1 - 3.0] {
+            bar_painter.circle_filled(pos2(cx, th.center().y), 3.0, Color32::from_gray(150));
+        }
+        if let Some(p) = latest.filter(|p| self.bar.is_some() || bar_rect.contains(*p))
+            && self
+                .bar
+                .as_ref()
+                .is_none_or(|(_, _, g)| g.part != crate::BarPart::Thumb)
+            && (self.bar.is_some() || p.x >= x0 && (p.x - x0 < 6.0 || x1 - p.x < 6.0) && p.x <= x1)
+        {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        }
+        // Cursor over the rows: grabbing while panning, resize over an edge that would trim.
+        if self.pan.is_some() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        } else if let Some(p) = latest.filter(|p| rows_area.contains(*p))
+            && self.press.is_none()
+        {
+            let (x, y) = local(p);
+            if let Hit::Clip { part, .. } = lay.hit(&project, seq.id, x, y) {
+                let tool = t.ui.tool;
+                let trims = match part {
+                    ClipPart::StartEdge => matches!(tool, Tool::Select | Tool::Ripple | Tool::Roll),
+                    ClipPart::EndEdge => matches!(
+                        tool,
+                        Tool::Select | Tool::Ripple | Tool::Roll | Tool::RateStretch
+                    ),
+                    ClipPart::Body => false,
+                };
+                if trims {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                }
+            }
+        } else if matches!(
+            self.press,
+            Some(Hit::Clip {
+                part: ClipPart::StartEdge | ClipPart::EndEdge,
+                ..
+            })
+        ) {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        }
+
         // Markers and playhead.
         for m in &seq.markers {
             let x = x_of(m.time);
@@ -633,7 +749,21 @@ impl App {
         if resp.drag_started()
             && let Some(p) = press_pos
         {
-            self.press = Some(pressed(p, &t.ui));
+            // A press left over from a release outside the window never carries over.
+            self.press = None;
+            let middle = resp.drag_started_by(egui::PointerButton::Middle);
+            let primary = resp.drag_started_by(egui::PointerButton::Primary);
+            let (x, y) = local(p);
+            let on_empty = matches!(lay.hit(&project, seq.id, x, y), Hit::Empty { .. });
+            let pan = rows_rect.contains(p)
+                && (middle
+                    || primary && t.ui.tool == Tool::Hand
+                    || primary && t.ui.tool == Tool::Select && on_empty);
+            if pan {
+                self.pan = Some((key.clone(), p, t.ui.scroll, sy));
+            } else if primary {
+                self.press = Some(pressed(p, &t.ui));
+            }
         }
         if let (Some(from), Some(p)) = (self.press, pos) {
             if resp.dragged() && matches!(from, Hit::Ruler { .. }) {
@@ -715,10 +845,19 @@ impl App {
                 .is_some();
         }
         if resp.hovered() {
-            let d = ui.input(|i| i.smooth_scroll_delta());
-            if mods.command && d.y != 0.0 {
-                let f = if d.y > 0.0 { 1.1 } else { 1.0 / 1.1 };
-                t.ui.px_per_sec = (t.ui.px_per_sec * f).clamp(1.0, 2000.0);
+            // egui turns Ctrl + wheel into `zoom_delta` and zeroes the scroll delta (U-NAV-4).
+            let (d, z) = ui.input(|i| (i.smooth_scroll_delta(), i.zoom_delta()));
+            if mods.command || mods.alt {
+                let f = if mods.alt && !mods.command {
+                    (d.y as f64 / 200.0).exp()
+                } else {
+                    z as f64
+                };
+                if let Some(p) = latest.filter(|p| p.x >= area.left())
+                    && f != 1.0
+                {
+                    crate::zoom_at(&mut t.ui, f, raw_time(local(p).0));
+                }
             } else if d.y != 0.0 && max_scroll > 0.0 && !mods.shift {
                 self.timeline_scroll_y = (sy - d.y).clamp(0.0, max_scroll);
             } else if d.x + d.y != 0.0 {

@@ -292,9 +292,10 @@ Window:
   outside the thumb does nothing. While dragged, each frame applies `bar_drag(ui, grab, dx / W)`,
   `dx` = pointer x − press x. Nothing in the project changes.
 - **U-NAV-4 Wheel.** Over the timeline area (right of the headers), wheel with Ctrl or Alt held
-  zooms: `zoom_at(ui, 1.1, t)` for each frame with a positive vertical scroll, `zoom_at(ui, 1 / 1.1,
-  t)` for a negative one, `t` = the unsnapped `x_to_time` of the pointer, so the time under the
-  pointer stays under it (within one pixel). Plain wheel scrolls the tracks vertically when they
+  zooms: each frame `zoom_at(ui, f, t)` with `f = exp(dy / 200)`, `dy` = that frame's smoothed
+  vertical wheel delta in points (for Ctrl, egui's `zoom_delta()`, which is the same formula), so
+  wheel up zooms in; `t` = the unsnapped `x_to_time` of the pointer, so the time under the pointer
+  stays under it (within one pixel). Plain wheel scrolls the tracks vertically when they
   overflow, else the time; Shift + wheel scrolls the time (as before).
 - **U-NAV-5 Drag to pan.** These drags pan the view live instead of editing: a primary drag with
   tool `Select` that starts on `Empty` space of a track row, a primary drag with tool `Hand` that
