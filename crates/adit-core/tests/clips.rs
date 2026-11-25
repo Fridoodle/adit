@@ -555,7 +555,12 @@ fn c_add_5_linked_overwrite_clears_both_targets() {
     );
     let p = doc.project();
     assert_eq!(spans(p, v1), vec![(x, 0, 2 * S), (n, 2 * S, 4 * S)]);
-    assert_eq!(spans(p, a1), vec![(y, S, 2 * S), (n + 1, 2 * S, 4 * S)]);
+    // y is [1s,5s): it contains [2s,4s) on both sides, so R5 leaves a right part [4s,5s).
+    // Ids: n video, n+1 audio, n+2 link (C-ADD-2/3), then the split remnant.
+    assert_eq!(
+        spans(p, a1),
+        vec![(y, S, 2 * S), (n + 1, 2 * S, 4 * S), (n + 3, 4 * S, 5 * S)]
+    );
 }
 
 #[test]

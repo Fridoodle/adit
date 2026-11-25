@@ -4,6 +4,7 @@
 
 mod command;
 mod document;
+mod engine;
 mod error;
 mod model;
 

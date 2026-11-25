@@ -127,12 +127,20 @@ pub struct Clip {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClipSource {
-    Media { media_id: Id },
+    Media {
+        media_id: Id,
+    },
     /// Nested sequence.
-    Sequence { sequence_id: Id },
-    Text { text: TextSpec },
+    Sequence {
+        sequence_id: Id,
+    },
+    Text {
+        text: TextSpec,
+    },
     /// RGBA, straight alpha, 0..1. A transparent solid plus effects is how generators are made.
-    Solid { color: [f32; 4] },
+    Solid {
+        color: [f32; 4],
+    },
     /// Applies its effect stack to everything below it.
     Adjustment,
 }
