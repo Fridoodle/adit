@@ -26,3 +26,5 @@ Concerns: `crates/adit-gui/src/app.rs`, `crates/adit-gui/src/app/*.rs`, `crates/
   black in the shot.
 
 Verified: 2026-11-25
+
+- Boot freeze (2026-11-25): release build of `adit gui` went Not Responding at start on the Vulkan backend (wgpu's default pick here); DX12 and GL were fine, debug builds were fine. The window's device and the renderer's device were being created at the same time on two threads. Fix: `warm_renderer` in `app.rs` creates the session renderer before `eframe::run_native`. The exact lock inside the driver was not identified (no debugger on this machine); evidence is backend-specific + fixed by ordering. Quick check: `WGPU_BACKEND=vulkan|dx12 adit gui` and `(Get-Process adit).Responding`. Always test the release binary, not only debug.

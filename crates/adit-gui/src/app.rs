@@ -743,6 +743,7 @@ impl eframe::App for App {
 
 /// Opens the window and blocks until it closes.
 pub fn run(session: Session, options: Options) -> Result<(), String> {
+    warm_renderer(&session);
     let native = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("adit")
@@ -755,6 +756,27 @@ pub fn run(session: Session, options: Options) -> Result<(), String> {
         Box::new(move |cc| Ok(Box::new(App::new(cc, session, options)))),
     )
     .map_err(|e| e.to_string())
+}
+
+/// Creates the session's GPU device before the window creates its own. Two devices starting at
+/// the same time on the Vulkan backend froze the window at boot (knowledge/egui-037-gui-notes.md).
+fn warm_renderer(session: &Session) {
+    let mut doc = adit_core::Document::new(Project::new("warm"));
+    let made = doc.apply(adit_core::Command::AddSequence {
+        name: String::new(),
+        width: 16,
+        height: 16,
+        fps: adit_core::Rational { num: 30, den: 1 },
+        sample_rate: 48000,
+        video_tracks: 0,
+        audio_tracks: 0,
+    });
+    if let Ok(made) = made
+        && let Some(&seq) = made.created.first()
+    {
+        // A failure here is reported by the first real render; nothing to do with it now.
+        let _ = session.render(doc.project(), seq, 0);
+    }
 }
 
 /// Selected clip ids that still exist.
