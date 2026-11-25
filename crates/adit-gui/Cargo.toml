@@ -1,0 +1,11 @@
+[package]
+name = "adit-gui"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+adit-core = { path = "../adit-core" }
+adit-media = { path = "../adit-media" }
+adit-mcp = { path = "../adit-mcp" }
+serde_json.workspace = true
+eframe = { version = "0.37", default-features = false, features = ["wgpu", "default_fonts"] }
