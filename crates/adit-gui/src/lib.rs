@@ -287,7 +287,7 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn update(&mut self, _ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, _ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         todo!()
     }
 }
