@@ -270,10 +270,10 @@ fn u_zoom_fit() {
         zoom(Action::ZoomFit, &empty, 5.0, S, 600.0).px_per_sec,
         600.0
     );
-    // clamps: 1000 / 10000 s = 0.1 -> 1; 5000 / 1 s -> 2000.
-    let long = B::std().clip(V1, 100, 0, 10_000 * S).build();
+    // clamps: 500 / 1000 s = 0.5 -> 1; 5000 / 1 s -> 2000. (The fixture media is 1000 s long.)
+    let long = B::std().clip(V1, 100, 0, 1000 * S).build();
     assert_eq!(
-        zoom(Action::ZoomFit, &long, 50.0, 0, 1000.0).px_per_sec,
+        zoom(Action::ZoomFit, &long, 50.0, 0, 500.0).px_per_sec,
         1.0
     );
     assert_eq!(
