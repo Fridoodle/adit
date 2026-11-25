@@ -77,6 +77,14 @@ Window:
   window repaints no more often than every 500 ms. Effects-browser filters go only to selected clips
   on unlocked video tracks.
 
+- **U-FIX-14 Labels and readings the tests rely on.** The text-clip content field is the only
+  multi-line text input while no dialog is open. The Speed dialog has one numeric field and an `OK`
+  button. The sequence selector shows the current sequence name and, when opened, one entry per other
+  sequence by name. The Close Project confirmation has a `Cancel` button; the quit prompt has the
+  heading `Unsaved changes`. With linked partners on locked tracks, Delete / RippleDelete name the
+  remaining clips explicitly with `include_linked: false`. In `media offline: <name>` and
+  `[offline] <name>`, the first is the media name, the second the clip name.
+
 ## Session additions (`adit_mcp::Session`)
 
 - **S-1** `projects()` lists open projects in opening order with `revision`. `revision(id)` grows by
