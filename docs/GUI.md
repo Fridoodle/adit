@@ -17,6 +17,14 @@ panic, whatever the state (missing sequence → no ops, `ui` unchanged). An acti
 do returns no `Op` (never an empty `Edit`). The commands in an `Op::Edit` are applied by the window as
 one atomic batch; a batch the core rejects changes nothing and is shown in the status bar.
 
+- **U-CLAR** Targets can be empty (every listed target locked); there is no fall-back to all tracks.
+  "No ops, `ui` unchanged" for a missing sequence holds for every action and every gesture. Stale
+  selection ids are left out of commands and not counted (`Group`, `ToggleLink`). `Insert` /
+  `Overwrite` send `name: None`. Geometry is computed in f64 and converted at the end. A `Select`
+  click on an edge zone selects the clip. `RateStretch` on a start edge or body, a `Wand` click on
+  empty space, and `Header` / `Nothing` hits with any tool are no-ops. A ruler drag changes only the
+  playhead, with every tool. `rows()` of a missing sequence is empty.
+
 ## Session additions (`adit_mcp::Session`)
 
 - **S-1** `projects()` lists open projects in opening order with `revision`. `revision(id)` grows by

@@ -6,8 +6,10 @@
 //! signatures in this file are fixed; bodies and private modules are free.
 
 use adit_core::{Command, Id, Project, Time};
-use adit_mcp::Session;
 use eframe::egui;
+
+mod app;
+mod logic;
 
 // ------------------------------------------------------------------------------------- state
 
@@ -67,8 +69,8 @@ pub struct UiState {
 
 impl UiState {
     /// Defaults (GUI.md U-STATE) for a sequence.
-    pub fn new(_sequence_id: Id) -> Self {
-        todo!()
+    pub fn new(sequence_id: Id) -> Self {
+        logic::new_state(sequence_id)
     }
 }
 
@@ -150,8 +152,8 @@ pub enum Op {
 }
 
 /// Runs an action against the current project (GUI.md U-*). Pure: changes only `ui`.
-pub fn perform(_action: Action, _project: &Project, _ui: &mut UiState) -> Vec<Op> {
-    todo!()
+pub fn perform(action: Action, project: &Project, ui: &mut UiState) -> Vec<Op> {
+    logic::perform(action, project, ui)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -164,7 +166,7 @@ pub struct KeyChord {
 
 /// Premiere Pro default keys (GUI.md U-KEYS). No chord appears twice.
 pub fn default_keymap() -> Vec<(KeyChord, Action)> {
-    todo!()
+    logic::default_keymap()
 }
 
 // ---------------------------------------------------------------------------------- geometry
@@ -191,41 +193,47 @@ pub enum ClipPart {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Hit {
-    Ruler { time: Time },
-    Header { track_id: Id },
-    Clip { clip_id: Id, track_id: Id, part: ClipPart, time: Time },
-    Empty { track_id: Id, time: Time },
+    Ruler {
+        time: Time,
+    },
+    Header {
+        track_id: Id,
+    },
+    Clip {
+        clip_id: Id,
+        track_id: Id,
+        part: ClipPart,
+        time: Time,
+    },
+    Empty {
+        track_id: Id,
+        time: Time,
+    },
     Nothing,
 }
 
 impl TimelineLayout {
-    pub fn time_to_x(&self, _time: Time) -> f32 {
-        todo!()
+    pub fn time_to_x(&self, time: Time) -> f32 {
+        logic::time_to_x(self, time)
     }
 
-    pub fn x_to_time(&self, _x: f32) -> Time {
-        todo!()
+    pub fn x_to_time(&self, x: f32) -> Time {
+        logic::x_to_time(self, x)
     }
 
     /// Track ids top to bottom as drawn.
-    pub fn rows(&self, _project: &Project, _sequence_id: Id) -> Vec<Id> {
-        todo!()
+    pub fn rows(&self, project: &Project, sequence_id: Id) -> Vec<Id> {
+        logic::rows(project, sequence_id)
     }
 
-    pub fn hit(&self, _project: &Project, _sequence_id: Id, _x: f32, _y: f32) -> Hit {
-        todo!()
+    pub fn hit(&self, project: &Project, sequence_id: Id, x: f32, y: f32) -> Hit {
+        logic::hit(self, project, sequence_id, x, y)
     }
 }
 
 /// Snaps `time` (GUI.md U-SNAP). `exclude` = clips being dragged; `tolerance` in flicks.
-pub fn snap(
-    _time: Time,
-    _project: &Project,
-    _ui: &UiState,
-    _exclude: &[Id],
-    _tolerance: Time,
-) -> Time {
-    todo!()
+pub fn snap(time: Time, project: &Project, ui: &UiState, exclude: &[Id], tolerance: Time) -> Time {
+    logic::snap(time, project, ui, exclude, tolerance)
 }
 
 // ------------------------------------------------------------------------------------- drags
@@ -245,8 +253,8 @@ pub struct Drag {
 
 /// Turns a gesture with the current tool into edits and state changes (GUI.md U-DRAG).
 /// A press and release at the same time and track is a click.
-pub fn drag(_drag: Drag, _project: &Project, _ui: &mut UiState) -> Vec<Op> {
-    todo!()
+pub fn drag(drag: Drag, project: &Project, ui: &mut UiState) -> Vec<Op> {
+    logic::drag(drag, project, ui)
 }
 
 // ------------------------------------------------------------------------------------ window
@@ -260,39 +268,4 @@ pub struct Options {
     pub mcp_token: Option<String>,
 }
 
-/// The egui application (GUI.md U-APP-*).
-pub struct App {
-    _private: (),
-}
-
-impl App {
-    pub fn new(_cc: &eframe::CreationContext<'_>, _session: Session, _options: Options) -> Self {
-        todo!()
-    }
-
-    /// Session id (`p1`, ...) of the project in the active tab.
-    pub fn project_id(&self) -> Option<&str> {
-        todo!()
-    }
-
-    /// Editing state of the active tab.
-    pub fn ui_state(&self) -> Option<&UiState> {
-        todo!()
-    }
-
-    /// Runs an action exactly as its key would (applies the resulting `Op`s through the session).
-    pub fn run_action(&mut self, _action: Action) {
-        todo!()
-    }
-}
-
-impl eframe::App for App {
-    fn ui(&mut self, _ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        todo!()
-    }
-}
-
-/// Opens the window and blocks until it closes.
-pub fn run(_session: Session, _options: Options) -> Result<(), String> {
-    todo!()
-}
+pub use app::{App, run};
