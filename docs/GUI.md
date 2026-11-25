@@ -25,6 +25,58 @@ one atomic batch; a batch the core rejects changes nothing and is shown in the s
   empty space, and `Header` / `Nothing` hits with any tool are no-ops. A ruler drag changes only the
   playhead, with every tool. `rows()` of a missing sequence is empty.
 
+## Rules added after the GUI review (U-FIX-*)
+
+Logic (`perform`, `drag`):
+
+- **U-FIX-1 Locked tracks.** The effective selection never contains clips on locked tracks: they are
+  left out before any command is built (AddEdit, Delete, RippleDelete, Nudge, ToggleEnable, moves).
+  Linked partners on locked tracks are left out the same way. If nothing remains → no op.
+- **U-FIX-2 Edge clicks.** A click (`dt == 0`, no track change) on a `StartEdge` / `EndEdge` never
+  trims: with `Select` it selects (U-CLAR), with `Ripple`, `Roll` or `RateStretch` it is a no-op.
+- **U-FIX-3 Hand.** The window passes the unsnapped pointer time to `drag` for tool `Hand`.
+
+Window:
+
+- **U-FIX-4 Click times.** For clicks and drags alike the window replaces `from.time` and `to_time`
+  with `snap(..)` of the pointer time (tool `Hand` excepted), so every edit made with the mouse lands
+  on a snap candidate or a frame boundary. A Razor click with snapping off splits exactly on a frame.
+- **U-FIX-5 Effect Controls hold edits.** Text typed into the text-clip content field, the font
+  field and the audio-filter field stays in the field while it has focus and is committed as one
+  command when focus leaves the field or the selected clip changes; numeric fields commit when the
+  drag or edit ends. An edit made over MCP to a field that is not being edited shows up at once.
+  Speed uses `include_linked: ui.linked_selection`.
+- **U-FIX-6 Dialogs remember their target.** Speed, Gain and Wand dialogs act on the project and
+  clips captured when they opened, whatever tab or selection is active when they are confirmed. If
+  the project is gone the dialog closes with a status message.
+- **U-FIX-7 Layout.** Track rows scroll vertically inside the Timeline panel; the number of tracks
+  never changes the height of the panels. With 18 tracks at a 1600x1000 window the Program monitor
+  image is at least 200 px high, and it is the same height as with 4 tracks. Adjacent clips are
+  visually separated (1 px outline).
+- **U-FIX-8 Sequences.** The Timeline header has a sequence selector listing the project's
+  sequences by name; choosing one sets `ui.sequence_id` (playhead 0, selection and marks cleared).
+  `ui_get` reports it; `ui_set { sequence_id }` switches (unknown id → `Err`). If the current
+  sequence is removed the tab falls back to the first one.
+- **U-FIX-9 Bridge.** `UiBridge::set` validates before accepting: no open project → `Err`; times
+  must be within `0..=MAX_TIME`; the resulting `mark_in` must be `<` the resulting `mark_out` when
+  both are set; unknown tool name → `Err`. An accepted `set` is visible to `get` immediately (same
+  call order as issued), also when the window is minimized or not repainting; it reaches the drawn
+  state on the next frame. A `ui_set { project_id }` naming a project opened over MCP a moment ago
+  works (the window syncs before applying).
+- **U-FIX-10 Unsaved work.** File > Close Project on a project with unsaved changes asks first.
+  A project closed by an MCP client leaves a status message naming it (and saying so if it had
+  unsaved changes). The quit prompt appears only if some open project has `dirty` and
+  `revision > 0` (a fresh untouched `Untitled` does not count) and goes away when that stops being
+  true.
+- **U-FIX-11 Offline media.** After opening or syncing a project, media whose file cannot be read
+  (`Session::source_frame` fails) is reported once in the status bar as `media offline: <name>` and
+  its clips are labelled `[offline] <name>` in the timeline.
+- **U-FIX-12 Type tool.** Adding a track and the text clip is one batch (one undo step); the new
+  track id is `project.next_id` before the batch.
+- **U-FIX-13 Misc.** `adit gui --port 0` → exit 2. Audio stream errors reach the status bar. An idle
+  window repaints no more often than every 500 ms. Effects-browser filters go only to selected clips
+  on unlocked video tracks.
+
 ## Session additions (`adit_mcp::Session`)
 
 - **S-1** `projects()` lists open projects in opening order with `revision`. `revision(id)` grows by
