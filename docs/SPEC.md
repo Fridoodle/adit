@@ -241,6 +241,66 @@ zero). Types and signatures: `crates/adit-core/src/{model,command,document,error
   with that error (G1). On success: one undo entry, `created` = concatenation in order. Nested batches
   are allowed. An empty batch is `Ok` and changes nothing.
 
+# Part 5 — hardening (added after independent review)
+
+An MCP client is untrusted input. None of the inputs below may crash, hang or abort the process; each
+is an ordinary error.
+
+- **H-3 Time bounds (core).** `MAX_TIME` = 3,600,000 s in flicks. Every `start`, `time`, `to`,
+  `source_in`, `duration` and marker time in a command must be `<= MAX_TIME`, keyframe `time` and
+  `delta` within `±MAX_TIME`, and every clip must end at or before `MAX_TIME`; otherwise
+  `InvalidArgument`. `validate()` rejects a project with a clip where `start + duration > MAX_TIME`
+  (computed without overflow), `source_in > MAX_TIME`, a marker beyond `MAX_TIME`, or a keyframe time
+  outside `±MAX_TIME`. A ripple that would push a clip past `MAX_TIME` → `RippleBlocked`.
+- **H-4 Nesting depth (core).** A sequence's nesting depth is 1 + the largest depth of the sequences
+  its clips nest (0 nested → 1). `AddClip` that would make any sequence deeper than `MAX_NEST_DEPTH`
+  (16) → `InvalidArgument`; `validate()` rejects deeper projects.
+- **H-10 Pruning inside batches (core).** G8 applies after each command of a `Batch`, not once at the
+  end. Example: P `[0,2s)`, Q `[2s,4s)` with a two-sided transition; a batch that moves Q to 3 s and
+  back to 2 s ends without the transition.
+- **H-15 (core).** `RemoveSequence` of a sequence that has a locked track → `TrackLocked`.
+- **H-6 Audio filter allow-list (media).** `check_audio_filter(s)`: `""` is ok. Otherwise `s` must be
+  filters separated by `,`, each `name` or `name=args`, with `name` in the allow-list and no `;`, `[`,
+  `]` anywhere (no filtergraph labels, no second chain). Allow-list: `volume, atempo, areverse,
+  highpass, lowpass, bandpass, bandreject, equalizer, bass, treble, acompressor, alimiter, agate,
+  aecho, chorus, flanger, aphaser, tremolo, vibrato, afade, adelay, loudnorm, dynaudnorm, compand,
+  anequalizer, afftdn, anlmdn, deesser, crystalizer, stereowiden, extrastereo, pan, aresample,
+  asetrate, silenceremove, apad, atrim, asetpts, acontrast, asoftclip, speechnorm, channelmap,
+  aformat`. Everything else is rejected, in particular `amovie`, `movie`, `ametadata`, `asendcmd`,
+  `azmq`, `afir`, `arnndn`, `ladspa`, `lv2`. `Ffmpeg::audio` calls it and returns
+  `MediaError::Ffmpeg` without starting ffmpeg when it fails; no file is created or read.
+- **H-7 Start offsets (media).** For a file whose first video frame is not at timestamp 0 (e.g. made
+  with `-output_ts_offset 10`), `video_frame(path, t)` still returns frame `time_to_frame(t, fps)`
+  counted from the first frame, for cold, random and sequential access alike. `probe` reports
+  `duration` measured from the file's start time (a 20 s clip offset by 10 s probes as about 20 s,
+  not 30 s). `audio(path, start, ..)` likewise counts `start` from the beginning of the audio.
+- **H-8 Variable frame rate (media).** Which frame is returned for a time does not depend on access
+  order: reading a time cold and reading it after a sequential run from 0 give identical pixels.
+- **H-14 (media).** `detect_silence` / `detect_scenes` are `MediaBackend` methods; `Ffmpeg` implements
+  them, `Pattern` returns `Unsupported`. The MCP tools use the session's backend, not an env var.
+- **H-1 Shader limits (render).** `validate_effect` rejects WGSL longer than 65,536 bytes and WGSL
+  whose `(`/`[`/`{` nesting is deeper than 64, before parsing. 500 nested parentheses return `Err`;
+  the process survives.
+- **H-2 (render).** `validate_effect` rejects WGSL declaring `override` constants (E-4 must hold).
+- **H-5 Allocation bounds (render, mcp).** `mix_audio` with a `duration` above `MAX_TIME` or negative
+  → `Err`, not an allocation. `audio_levels` clamps `end` to the sequence end and rejects
+  `start >= end`. `export` of a sequence longer than 4 hours → `Err` (`shortcut`: the soundtrack is
+  mixed in memory).
+- **H-11 (mcp).** `render_contact_sheet` whose sheet would exceed 64,000,000 pixels → error.
+- **H-9 Effect references stay valid (mcp).** `edit` fails, changing nothing, if after the batch any
+  clip effect or transition names an effect that no longer resolves with the right kind (e.g.
+  `remove_effect_def` of an effect in use, or a `define_effect` that changes its kind).
+- **H-12 Export does not destroy files (render, mcp).** Export writes to a temporary file next to the
+  target and renames it over the target only on success. On failure or cancel a file that already
+  existed at the target path is untouched. `export` to a path that is one of the project's media
+  files → error.
+- **H-13 (mcp).** `project_save` flushes the temp file to disk (`sync_all`) before the rename. At
+  most 4 export jobs run at once; a fifth `export` → error.
+
+Known limits, not fixed in this milestone: a user shader with a very long loop can stall the renderer;
+blocking tools and HTTP requests each take a thread without an upper bound; one idle ffmpeg reader per
+video file is kept alive.
+
 # Part 2 — adit-media
 
 API: `crates/adit-media/src/lib.rs`. ffmpeg and ffprobe run as subprocesses; nothing links against them.

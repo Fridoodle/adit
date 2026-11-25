@@ -54,6 +54,27 @@ pub trait MediaBackend: Send + Sync {
         sample_rate: u32,
         filter: &str,
     ) -> Result<Vec<f32>, MediaError>;
+
+    /// Silent stretches `[start, end)`. Backends without analysis return `Unsupported` (SPEC H-14).
+    fn detect_silence(
+        &self,
+        _path: &str,
+        _noise_db: f64,
+        _min_duration: Time,
+    ) -> Result<Vec<(Time, Time)>, MediaError> {
+        Err(MediaError::Unsupported("silence detection".into()))
+    }
+
+    /// Times of scene cuts. Backends without analysis return `Unsupported` (SPEC H-14).
+    fn detect_scenes(&self, _path: &str, _threshold: f64) -> Result<Vec<Time>, MediaError> {
+        Err(MediaError::Unsupported("scene detection".into()))
+    }
+}
+
+/// Accepts only a plain chain of allow-listed ffmpeg audio filters (SPEC H-6). `Err` names the
+/// rejected part.
+pub fn check_audio_filter(_filter: &str) -> Result<(), String> {
+    todo!()
 }
 
 /// Real files through ffmpeg subprocesses.

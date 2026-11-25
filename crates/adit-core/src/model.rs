@@ -8,6 +8,11 @@ use std::collections::BTreeMap;
 pub type Time = i64;
 pub type Id = u64;
 pub const FLICKS_PER_SECOND: Time = 705_600_000;
+/// Upper bound for every time and for `start + duration` of every clip (1000 hours). Keeps all
+/// time arithmetic far from i64 overflow (SPEC H-3).
+pub const MAX_TIME: Time = 3_600_000 * FLICKS_PER_SECOND;
+/// Deepest allowed chain of nested sequences (SPEC H-4).
+pub const MAX_NEST_DEPTH: usize = 16;
 /// Rounding slack (flicks) allowed when checking a clip against its source length (SPEC I3).
 pub const SOURCE_SLACK: Time = 2;
 
