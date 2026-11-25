@@ -48,6 +48,15 @@ zero). Types and signatures: `crates/adit-core/src/{model,command,document,error
   When `track_ids: None` means "all unlocked tracks", locked tracks are skipped, not an error.
 - **G6** Any non-finite `f64`, negative `start`/`time`, or `duration <= 0` (where a duration is given;
   markers allow 0) in a command → `InvalidArgument`. Empty `clip_ids` → `InvalidArgument`.
+  Negative values are allowed for keyframe `time` and for `delta`. A negative `to` in `TrimClip` →
+  `InvalidArgument`. A negative `source_in` → `SourceOutOfRange` (R7).
+- **G10 Clarifications.** G5 covers every command that changes a clip's fields, params, keyframes,
+  effects, link or group, and `CloseGap` on a locked target track. `SplitClip` with
+  `include_linked: false` gives the right part `link: None`. `Clip::param` returns `None` for any name
+  not in `CLIP_PARAMS`, stored or not. `AddTransition` naming a clip that does not exist → `NotFound`.
+  `RemoveKeyframe` on a param that does not exist → `InvalidArgument`. `GroupClips` across sequences →
+  `InvalidArgument`. In R7, "stays as is" means trims never change `source_in` of `Text`, `Solid`,
+  `Adjustment` clips.
 - **G7** An id that does not exist → `NotFound`.
 - **G8 Transition pruning.** After every successful command, transitions that no longer satisfy I5 are
   removed silently.
@@ -155,8 +164,8 @@ zero). Types and signatures: `crates/adit-core/src/{model,command,document,error
   `InvalidArgument`) or, for `None`, all unlocked tracks.
 - **C-EXT-1** `ExtractRange`: as `LiftRange`, then on each *target* track every clip with
   `start >= end` gets `start -= (end - start)`. Non-target tracks do not change. With `None` and no
-  locked track holding material after `start`, `Sequence::duration()` drops by exactly
-  `min(old_duration, end) - start` when `old_duration > start`.
+  locked tracks: if `old_duration > end`, `Sequence::duration()` drops by exactly `end - start`; if
+  `old_duration <= start` it is unchanged; otherwise the new duration is `<= start`.
 - **C-GAP-1** `CloseGap`: the gap is `[a, b)` where `a` = end of the last clip on the track ending at or
   before `time` (0 if none) and `b` = start of the first clip starting after `time`. If `time` is inside a
   clip, or there is no clip after `time` → `InvalidArgument`. If any clip on any unlocked track of the
