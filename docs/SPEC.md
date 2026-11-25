@@ -237,6 +237,15 @@ zero). Types and signatures: `crates/adit-core/src/{model,command,document,error
   (id 5, `next_id` 9); paste one copy of a 2 s clip at 4 s with `overwrite` → X `[0, 4s)`, the copy
   `[4s, 6s)` with id 9, X's right part `[6s, 10s)` with id 10; `created = [9]`.
 
+- **C-PASTE-4 Clarifications.** A split (R4) allocates the right part's clip id first, then its
+  effect-instance ids in order; with several items the splits happen in item order. "Any non-finite
+  number" covers every `f64` of the clip, including `Solid` colour and `TextSpec` numbers. Keyframes
+  of effect-instance params follow the same sorted / unique / finite rule; negative keyframe times
+  are allowed (G6). An effect instance with an empty `effect` name → `InvalidArgument`. H-3
+  (`MAX_TIME`) and H-4 (nesting depth) apply as they do to `AddClip`. Items are checked in item
+  order and the first failing item decides the error; which of several faults of one item is
+  reported is not specified. `Project::validate` rejects a clip with `label > 8`.
+
 ### Parameters, keyframes, effects, transitions
 
 - **C-PARAM-1** Target with `effect_id: None`: `name` must be in `CLIP_PARAMS` else `InvalidArgument`.

@@ -207,6 +207,18 @@ Window:
 - **U-ED-20 Library.** The Effects browser lists library effects (T-LIB-3) marked as such; applying
   one works like any other effect.
 
+- **U-ED-21 Clarifications.** `Op::Copy` also puts the text `adit clips` on the system clipboard, so
+  the OS delivers a paste event for `^V`. A paste into another project works only for items whose
+  track id exists there (`shortcut`). A menu closes after a choice; `Label` and `Add Transition` are
+  submenu buttons whose entries appear when clicked. The tolerance of `snap_delta` in the window is
+  8 px in time, as for `snap`. Effect Controls numeric fields are labelled by their names, among
+  them `Scale X` and `Scale Y`. A file drop snaps the pointer time and sizes the clips as a bin drop
+  does; the import is one undo step and the placement one more. `panel` in a wand request is the
+  U-APP-1 title of the panel (`Project`, `Effects`, `Source`, `Effect Controls`, `Requests`), or
+  `Meters` or `Status`; a click on the panel's title counts. The Requests panel puts `[app]` or
+  `[import]` in front of the text of such requests. The AI import dialog closes after `Send`.
+  A library effect is listed in the Effects browser as `<name> (library)`.
+
 ## Session additions (`adit_mcp::Session`)
 
 - **S-1** `projects()` lists open projects in opening order with `revision`. `revision(id)` grows by
