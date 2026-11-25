@@ -411,6 +411,15 @@ conversion). Pixel tests allow ±2 per 8-bit channel.
   Transitions: `cross_dissolve`, `dip_to_black`, `wipe`, `push` (V-9).
   Every built-in passes `validate_effect`. Names are unique.
 
+- **E-6 Clarifications.** The anchor (V-6) is only the pivot for scale and rotation: changing it alone
+  does not move the image. Inside a transition window the clips' own blend modes are ignored (V-9;
+  `shortcut`). Text is centred by its layout box. `ParamDef.min/max` are hints for UIs and are not
+  enforced. An invalid effect at render time → `RenderError::Shader` or `UnknownEffect`. A project
+  definition of the wrong kind does not hide a built-in of the right kind. `drop_shadow` positive
+  `dy` is down. `ellipse` and `linear_gradient` colour defaults: white opaque (`r1..a1`), black opaque
+  (`r0..a0`). `atempo` factors are written with enough digits to multiply back to the speed, each step
+  within 0.5..100. `Renderer` is `Send`.
+
 ## Audio
 
 - **A-1** `mix_audio` returns exactly `2 * round(duration * sample_rate / s)` samples (interleaved L, R).
