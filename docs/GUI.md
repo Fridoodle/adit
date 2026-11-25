@@ -277,6 +277,12 @@ Layout as in Premiere Pro's editing workspace. Checked by headless UI tests (egu
   as PNG; `get`/`set` read and write the active tab's `UiState` fields named in the trait docs
   (`set` with an unknown `project_id` or a non-existent clip id → `Err`; times are rounded to
   frames).
+- **U-APP-10 Labels and clarifications.** Clip names in the timeline, project tab names and
+  status-bar messages are real widgets with accessible labels (not painter-only text), so tests and
+  screen readers can find them. The wand prompt has a text field labelled `Request` and a button
+  `Send`. `ui_set` with `project_id` switches the active tab; frame strings without one use the
+  sequence `UiBridge::get` reports. Tool names in `ui_get`/`ui_set` are lower snake case
+  (`select`, `track_select`, `rate_stretch`, ...). The usage text lists `adit gui`.
 - **U-APP-9 Robustness.** No tool error, missing media file, failed render or absent audio device
   closes or freezes the window; errors go to the status bar. Closing the window with unsaved
   projects asks first.
