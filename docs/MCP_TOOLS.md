@@ -43,6 +43,15 @@ cite them. Behavioural rules of the edits themselves are in `docs/SPEC.md`.
 - **T-6 Sequence default.** Tools with an optional `sequence_id` use the project's first sequence when
   it is omitted; no sequence → error.
 
+- **T-7 Clarifications.** `audio_levels`: rms over the samples of both channels together, peak =
+  max |sample| of either channel. `request_list` → `{ requests: [...] }`. `dirty` is `true` for a new
+  never-saved project and after any change (including undo/redo) since the last save/open. Timecode
+  strings need 4 parts and count frames non-drop at `ceil(fps)` frames per second. T-4 conversion
+  applies at every depth of nested `batch` commands. `export` `fps` takes the same strings as
+  `project_new`. A job that cannot write its output ends `failed` (or `export` itself errors).
+  Contact-sheet cells scale up or down to `cell_size`; the sheet is PNG. `--help` exits 0; bare
+  `adit`, an invalid `--codec` or `--port` exit 2. The random token has at least 32 hex characters.
+
 ## Tools
 
 ### Projects
