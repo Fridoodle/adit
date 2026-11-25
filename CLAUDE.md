@@ -7,7 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **adit** — "Agentic Editor". Rust-based editing software focused on MCP server editing and AI-driven editing.
 Repo: https://github.com/Fridoodle/adit (default branch `main`).
 
-Status: headless engine + MCP server work (milestones 1-3). GUI is not built yet (milestone 4).
+Status: headless engine, MCP server and the Premiere-style window work (milestones 1-4).
+Never exercised by a person yet: real keyboard/mouse in the window, native file dialogs, audio output.
 Needs `ffmpeg` and `ffprobe` on PATH (or env `ADIT_FFMPEG` / `ADIT_FFPROBE`).
 
 ```
@@ -19,17 +20,22 @@ cargo test -p <crate> --test <file> <test_name>   # single test
 cargo mutants -p adit-core --jobs 2 --timeout 120  # mutation check, ~25 min
 cargo run -p adit -- mcp                           # MCP server on stdio (headless)
 cargo run -p adit -- serve --port 7821             # MCP over HTTP on 127.0.0.1, bearer token on stderr
+cargo run -p adit -- gui [project.adit] [--port N] # window + MCP over HTTP in one process
 ```
 
 Crates (`crates/`): `adit-core` (project model, `Command` enum, undo; no IO) → `adit-media` (ffmpeg
 subprocesses) → `adit-render` (wgpu compositor, WGSL effects, audio mix, export) → `adit-mcp`
-(`Session` tool layer, MCP stdio/HTTP) → `adit` (binary). Every edit, from any client, is a
-`Command` applied through `Document::apply`.
+(`Session` tool layer, MCP stdio/HTTP) → `adit-gui` (egui window; pure logic in `logic.rs`, widgets
+in `app/`) → `adit` (binary). Every edit, from any client, is a `Command` applied through
+`Document::apply`; the window is just another `Session` client.
+
+To check the window without a person: run `adit gui`, then call the MCP tools `ui_set`, `ui_get`
+and `ui_screenshot` over HTTP and read the PNG. Crop a region before judging small details.
 
 ## Contracts and test-first rule
 
-`docs/SPEC.md` (behaviour, rule ids like `C-RIP-1`, `V-7`, `H-6`) and `docs/MCP_TOOLS.md` (tools,
-`T-*`) are the contract. Tests cite rule ids. Order of work for any behaviour change:
+`docs/SPEC.md` (behaviour, rule ids like `C-RIP-1`, `V-7`, `H-6`), `docs/MCP_TOOLS.md` (tools,
+`T-*`) and `docs/GUI.md` (window, `U-*`, `S-*`) are the contract. Tests cite rule ids. Order of work for any behaviour change:
 
 1. Change the spec first.
 2. Tests are written from the spec by an agent that does not see the implementation; expected values

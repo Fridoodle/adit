@@ -130,7 +130,7 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 fn mixer(session: Session, rx: Receiver<Msg>, errors: Sender<String>, peaks: Arc<[AtomicU32; 2]>) {
     let buf: Buffer = Arc::default();
-    let out = match open_output(buf.clone(), peaks) {
+    let out = match open_output(buf.clone(), peaks, errors.clone()) {
         Ok(o) => Some(o),
         Err(e) => {
             let _ = errors.send(format!("no audio output ({e}); playback is silent"));
@@ -198,17 +198,21 @@ fn resample(s: &[f32], from: u32, to: u32) -> Vec<f32> {
 }
 
 /// Opens the default output device; returns the stream and its sample rate.
-fn open_output(buf: Buffer, peaks: Arc<[AtomicU32; 2]>) -> Result<(cpal::Stream, u32), String> {
+fn open_output(
+    buf: Buffer,
+    peaks: Arc<[AtomicU32; 2]>,
+    errors: Sender<String>,
+) -> Result<(cpal::Stream, u32), String> {
     let device = cpal::default_host()
         .default_output_device()
         .ok_or("no output device")?;
     let config = device.default_output_config().map_err(|e| e.to_string())?;
     let rate = config.sample_rate();
     let stream = match config.sample_format() {
-        cpal::SampleFormat::F32 => build::<f32>(&device, config.into(), buf, peaks),
-        cpal::SampleFormat::I16 => build::<i16>(&device, config.into(), buf, peaks),
-        cpal::SampleFormat::U16 => build::<u16>(&device, config.into(), buf, peaks),
-        cpal::SampleFormat::I32 => build::<i32>(&device, config.into(), buf, peaks),
+        cpal::SampleFormat::F32 => build::<f32>(&device, config.into(), buf, peaks, errors),
+        cpal::SampleFormat::I16 => build::<i16>(&device, config.into(), buf, peaks, errors),
+        cpal::SampleFormat::U16 => build::<u16>(&device, config.into(), buf, peaks, errors),
+        cpal::SampleFormat::I32 => build::<i32>(&device, config.into(), buf, peaks, errors),
         f => return Err(format!("unsupported sample format {f}")),
     }?;
     stream.play().map_err(|e| e.to_string())?;
@@ -220,6 +224,7 @@ fn build<T: cpal::SizedSample + cpal::FromSample<f32>>(
     config: cpal::StreamConfig,
     buf: Buffer,
     peaks: Arc<[AtomicU32; 2]>,
+    errors: Sender<String>,
 ) -> Result<cpal::Stream, String> {
     let channels = config.channels as usize;
     device
@@ -246,7 +251,10 @@ fn build<T: cpal::SizedSample + cpal::FromSample<f32>>(
                     a.fetch_max(p.to_bits(), Ordering::Relaxed);
                 }
             },
-            |_| {},
+            // Stream errors reach the status bar (U-FIX-13).
+            move |e| {
+                let _ = errors.send(format!("audio output: {e}"));
+            },
             None,
         )
         .map_err(|e| e.to_string())

@@ -335,7 +335,30 @@ fn two_projects(h: &mut Harness<'static, App>, s: &adit_mcp::Session) -> (String
 fn u_fix_6_speed_dialog_acts_on_captured_project_and_clips() {
     let s = session();
     let mut h = harness(&s, Options::default());
-    let (pa, ca, pb, cb) = two_projects(&mut h, &s);
+    let (pa, _, pb, _) = two_projects(&mut h, &s);
+    // Speed applies only to media and sequence clips (SPEC C-SPEED-1), so use media clips.
+    let media_clip = |pid: &str| -> Id {
+        let m = call(
+            &s,
+            "media_import",
+            json!({ "project_id": pid, "paths": ["speed.mov"] }),
+        )
+        .json["media"][0]["id"]
+            .as_u64()
+            .unwrap();
+        let track = snapshot(&s, pid).sequences[0].tracks[0].id;
+        edit(
+            &s,
+            pid,
+            json!([{ "op": "add_clip", "track_id": track, "source": { "type": "media", "media_id": m },
+                     "start": "3s", "duration": "2s" }]),
+        )["created"][0][0]
+            .as_u64()
+            .unwrap()
+    };
+    let (ca, cb) = (media_clip(&pa), media_clip(&pb));
+    h.run_steps(3);
+    ui_set(&mut h, &s, json!({ "project_id": pa, "selection": [ca] }));
     h.state_mut().run_action(Action::SpeedDialog);
     step_until(&mut h, "speed dialog", |h| has_label(h, "OK"));
     h.get_by_role(Role::SpinButton).set_value_accesskit(50.0);

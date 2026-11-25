@@ -58,3 +58,38 @@ impl<Q: Send + 'static, R: Send + 'static> Worker<Q, R> {
         out
     }
 }
+
+/// Checks, one path at a time, whether a media file's pictures can be read (U-FIX-11).
+pub struct Checker {
+    tx: Sender<String>,
+    rx: Receiver<(String, bool)>,
+}
+
+impl Checker {
+    pub fn new(ctx: &egui::Context, session: &adit_mcp::Session) -> Self {
+        let (tx, jobs) = channel::<String>();
+        let (done, rx) = channel();
+        let (ctx, session) = (ctx.clone(), session.clone());
+        std::thread::spawn(move || {
+            while let Ok(path) = jobs.recv() {
+                let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    session.source_frame(&path, 0).is_ok()
+                }))
+                .unwrap_or(false);
+                if done.send((path, ok)).is_err() {
+                    return;
+                }
+                ctx.request_repaint();
+            }
+        });
+        Checker { tx, rx }
+    }
+
+    pub fn request(&self, path: String) {
+        let _ = self.tx.send(path);
+    }
+
+    pub fn result(&self) -> Option<(String, bool)> {
+        self.rx.try_recv().ok()
+    }
+}

@@ -85,6 +85,13 @@ Window:
   remaining clips explicitly with `include_linked: false`. In `media offline: <name>` and
   `[offline] <name>`, the first is the media name, the second the clip name.
 
+- **U-FIX-15 Settled conflicts.** A project closed over MCP is named in the status message by its
+  name only when unsaved changes were lost, otherwise by its id (U-APP-3's tab text must disappear).
+  An edit action that does nothing because every selected clip is on a locked track puts
+  `track N is locked` in the status bar. In `ui_set`, frame strings resolve at the fps of the
+  sequence that was current before the call, also when the same call switches `sequence_id`.
+  The offline check covers media with video only.
+
 ## Session additions (`adit_mcp::Session`)
 
 - **S-1** `projects()` lists open projects in opening order with `revision`. `revision(id)` grows by

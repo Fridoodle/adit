@@ -33,17 +33,31 @@ fn tick_step(px_per_sec: f64) -> f64 {
 
 impl App {
     pub(super) fn timeline_panel(&mut self, ui: &mut egui::Ui) {
+        let mut switch = None;
         ui.horizontal(|ui| {
             ui.strong("Timeline");
             if let Some(t) = self.tab()
                 && let Some(seq) = t.project.sequence(t.ui.sequence_id)
             {
-                ui.label(&seq.name);
+                // Sequence selector (U-FIX-8): the current name, a menu of the others.
+                ui.menu_button(seq.name.as_str(), |ui| {
+                    for q in t.project.sequences.iter().filter(|q| q.id != seq.id) {
+                        if ui.button(q.name.as_str()).clicked() {
+                            switch = Some(q.id);
+                        }
+                    }
+                })
+                .response
+                .on_hover_text("Sequence");
                 ui.monospace(timecode(t.ui.playhead, seq.fps));
                 let snap = if t.ui.snap { "Snap on" } else { "Snap off" };
                 ui.weak(snap);
             }
         });
+        if let (Some(id), Some(t)) = (switch, self.tabs.get_mut(self.active)) {
+            super::bridge::switch_sequence(&mut t.ui, id);
+            self.timeline_scroll_y = 0.0;
+        }
         let Some(t) = self.tabs.get_mut(self.active) else {
             ui.weak("No project open.");
             return;
@@ -53,14 +67,23 @@ impl App {
             ui.weak("No sequence.");
             return;
         };
+        // Exactly the space left: the track count never changes the panel size (U-FIX-7).
         let (rect, resp) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
         t.ui.view_width = (rect.width() - HEADER).max(1.0);
         let lay = layout(&t.ui);
         let rows = lay.rows(&project, seq.id);
+        let rows_rect = Rect::from_min_max(pos2(rect.left(), rect.top() + RULER), rect.max);
+        let max_scroll = (rows.len() as f32 * TRACK - rows_rect.height()).max(0.0);
+        let sy = self.timeline_scroll_y.clamp(0.0, max_scroll);
         let x_of = |time: Time| rect.left() + lay.time_to_x(time);
-        let row_top = |i: usize| rect.top() + RULER + i as f32 * TRACK;
-        let local = |p: Pos2| (p.x - rect.left(), p.y - rect.top());
+        let row_top = |i: usize| rect.top() + RULER + i as f32 * TRACK - sy;
+        // Panel-local coordinates as `TimelineLayout` sees them: rows scrolled, ruler fixed.
+        let local = |p: Pos2| {
+            let y = p.y - rect.top();
+            (p.x - rect.left(), if y < RULER { y } else { y + sy })
+        };
         let area = Rect::from_min_max(pos2(rect.left() + HEADER, rect.top()), rect.max);
+        let rows_area = area.intersect(rows_rect);
 
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, Color32::from_gray(22));
@@ -69,7 +92,12 @@ impl App {
             0.0,
             Color32::from_gray(34),
         );
-        let area_painter = ui.painter_at(area);
+        let ruler_painter = ui.painter_at(area);
+        let row_painter = ui.painter_at(rows_rect);
+        let area_painter = ui.painter_at(rows_area);
+        // Widgets of the rows live in a child clipped to the rows, not allocated in the panel.
+        let mut rows_ui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+        rows_ui.set_clip_rect(rows_rect);
 
         // Ruler ticks.
         let step = tick_step(lay.px_per_sec);
@@ -80,14 +108,14 @@ impl App {
             if x > rect.right() {
                 break;
             }
-            area_painter.line_segment(
+            ruler_painter.line_segment(
                 [
                     pos2(x, rect.top() + RULER - 8.0),
                     pos2(x, rect.top() + RULER),
                 ],
                 Stroke::new(1.0, Color32::from_gray(120)),
             );
-            area_painter.text(
+            ruler_painter.text(
                 pos2(x + 3.0, rect.top() + 2.0),
                 egui::Align2::LEFT_TOP,
                 timecode(tt, seq.fps),
@@ -103,14 +131,14 @@ impl App {
             let bottom = row_top(rows.len()).min(rect.bottom());
             let r = Rect::from_x_y_ranges(a..=b, rect.top()..=bottom);
             area_painter.rect_filled(r, 0.0, Color32::from_rgba_unmultiplied(90, 140, 255, 24));
-            area_painter.rect_filled(
+            ruler_painter.rect_filled(
                 Rect::from_x_y_ranges(a..=b, rect.top() + RULER - 5.0..=rect.top() + RULER),
                 0.0,
                 Color32::from_rgb(90, 140, 255),
             );
         }
 
-        // Tracks and clips.
+        // Tracks and clips; rows scrolled out of view get no widgets.
         let mut toggles: Vec<Command> = Vec::new();
         let mut target_click = None;
         for (i, &tid) in rows.iter().enumerate() {
@@ -118,17 +146,20 @@ impl App {
                 continue;
             };
             let y = row_top(i);
+            if y + TRACK < rows_rect.top() || y > rows_rect.bottom() {
+                continue;
+            }
             let row = Rect::from_min_size(pos2(rect.left(), y), vec2(rect.width(), TRACK));
             let shade = if i % 2 == 0 { 28 } else { 25 };
-            painter.rect_filled(row, 0.0, Color32::from_gray(shade));
+            row_painter.rect_filled(row, 0.0, Color32::from_gray(shade));
             let head = Rect::from_min_size(row.min, vec2(HEADER, TRACK));
-            painter.rect_filled(head, 0.0, Color32::from_gray(40));
-            painter.line_segment(
+            row_painter.rect_filled(head, 0.0, Color32::from_gray(40));
+            row_painter.line_segment(
                 [pos2(rect.left(), y + TRACK), pos2(rect.right(), y + TRACK)],
                 Stroke::new(1.0, Color32::from_gray(15)),
             );
             let targeted = t.ui.targets.is_empty() || t.ui.targets.contains(&tid);
-            let name = ui.put(
+            let name = rows_ui.put(
                 Rect::from_min_size(head.min + vec2(4.0, 4.0), vec2(56.0, 18.0)),
                 egui::Button::selectable(targeted && !track.locked, track.name.as_str()).small(),
             );
@@ -146,7 +177,7 @@ impl App {
                     head.min + vec2(64.0 + k as f32 * 21.0, 4.0),
                     vec2(19.0, 18.0),
                 );
-                if ui
+                if rows_ui
                     .put(r, egui::Button::selectable(on, label).small())
                     .on_hover_text(tip)
                     .clicked()
@@ -168,8 +199,17 @@ impl App {
                 if x1 < area.left() || x0 > area.right() {
                     continue;
                 }
+                let offline = match c.source {
+                    ClipSource::Media { media_id } => project
+                        .media
+                        .iter()
+                        .find(|m| m.id == media_id)
+                        .is_some_and(|m| self.offline.get(&m.spec.path) == Some(&Some(false))),
+                    _ => false,
+                };
                 let r = Rect::from_x_y_ranges(x0..=x1.max(x0 + 1.0), y + 3.0..=y + TRACK - 3.0);
                 let base = match (&c.source, track.kind) {
+                    _ if offline => Color32::from_rgb(150, 50, 50),
                     (_, TrackKind::Audio) => Color32::from_rgb(60, 130, 90),
                     (ClipSource::Text { .. }, _) => Color32::from_rgb(140, 90, 170),
                     (ClipSource::Solid { .. } | ClipSource::Adjustment, _) => {
@@ -177,31 +217,36 @@ impl App {
                     }
                     _ => Color32::from_rgb(70, 110, 170),
                 };
+                let selected = t.ui.selection.contains(&c.id);
                 let fill = if !c.enabled {
                     Color32::from_gray(70)
-                } else if t.ui.selection.contains(&c.id) {
+                } else if selected {
                     base.lerp_to_gamma(Color32::WHITE, 0.25)
                 } else {
                     base
                 };
                 area_painter.rect_filled(r, 3.0, fill);
-                if t.ui.selection.contains(&c.id) {
-                    area_painter.rect_stroke(
-                        r,
-                        3.0,
-                        Stroke::new(1.5, Color32::WHITE),
-                        egui::StrokeKind::Inside,
-                    );
-                }
+                // A 1 px outline keeps adjacent clips apart (U-FIX-7).
+                let stroke = if selected {
+                    Stroke::new(1.5, Color32::WHITE)
+                } else {
+                    Stroke::new(1.0, Color32::from_gray(10))
+                };
+                area_painter.rect_stroke(r, 3.0, stroke, egui::StrokeKind::Inside);
                 // The clip name is a real widget so it is accessible (U-APP-10).
                 let text_rect = r.shrink2(vec2(4.0, 2.0));
-                let mut child = ui.new_child(
+                let mut child = rows_ui.new_child(
                     egui::UiBuilder::new()
                         .max_rect(text_rect)
                         .layout(egui::Layout::left_to_right(egui::Align::Center)),
                 );
-                child.set_clip_rect(text_rect.intersect(area));
-                let label = if c.name.is_empty() { "(clip)" } else { &c.name };
+                child.set_clip_rect(text_rect.intersect(rows_area));
+                let name = if c.name.is_empty() { "(clip)" } else { &c.name };
+                let label = if offline {
+                    format!("[offline] {name}")
+                } else {
+                    name.to_string()
+                };
                 child.add(
                     egui::Label::new(egui::RichText::new(label).color(Color32::WHITE).size(12.0))
                         .selectable(false)
@@ -233,23 +278,33 @@ impl App {
                 );
             }
         }
+        if max_scroll > 0.0 {
+            let h = rows_rect.height();
+            let len = (h * h / (h + max_scroll)).max(20.0);
+            let top = rows_rect.top() + (h - len) * sy / max_scroll;
+            painter.rect_filled(
+                Rect::from_x_y_ranges(rect.right() - 5.0..=rect.right() - 1.0, top..=top + len),
+                2.0,
+                Color32::from_gray(90),
+            );
+        }
 
         // Markers and playhead.
         for m in &seq.markers {
             let x = x_of(m.time);
             let top = rect.top() + RULER - 10.0;
-            area_painter.add(egui::Shape::convex_polygon(
+            ruler_painter.add(egui::Shape::convex_polygon(
                 vec![pos2(x - 5.0, top), pos2(x + 5.0, top), pos2(x, top + 8.0)],
                 Color32::from_rgb(240, 180, 40),
                 Stroke::NONE,
             ));
         }
         let px = x_of(t.ui.playhead);
-        area_painter.line_segment(
+        ruler_painter.line_segment(
             [pos2(px, rect.top()), pos2(px, rect.bottom())],
             Stroke::new(1.5, Color32::from_rgb(230, 60, 60)),
         );
-        area_painter.add(egui::Shape::convex_polygon(
+        ruler_painter.add(egui::Shape::convex_polygon(
             vec![
                 pos2(px - 6.0, rect.top()),
                 pos2(px + 6.0, rect.top()),
@@ -273,24 +328,35 @@ impl App {
                 .then(|| rows.get(i as usize).copied())
                 .flatten()
         };
+        // U-FIX-4: pointer times are snapped for clicks and drags alike; U-FIX-3: not for Hand.
+        let pointer_time = |x: f32, from: &Hit, ui_state: &crate::UiState| {
+            let raw = lay.x_to_time(x.max(HEADER)).max(0);
+            if ui_state.tool == Tool::Hand {
+                return raw;
+            }
+            let exclude = match *from {
+                Hit::Clip { clip_id, .. } if ui_state.selection.contains(&clip_id) => {
+                    ui_state.selection.clone()
+                }
+                Hit::Clip { clip_id, .. } => vec![clip_id],
+                _ => vec![],
+            };
+            let tol = (8.0 * S / ui_state.px_per_sec).round() as Time;
+            crate::snap(raw, &project, ui_state, &exclude, tol)
+        };
+        let pressed = |p: Pos2, ui_state: &crate::UiState| {
+            let (x, y) = local(p);
+            let h = lay.hit(&project, seq.id, x, y);
+            with_time(h, pointer_time(x, &h, ui_state))
+        };
         let mut ops = Vec::new();
         let finish = |from: Hit, p: Pos2, ui_state: &mut crate::UiState, click: bool| {
             let (x, y) = local(p);
-            let to_time = if click {
-                hit_time(&from)
+            let (to_time, to_track) = if click {
+                (hit_time(&from), hit_track(&from))
             } else {
-                let exclude = match from {
-                    Hit::Clip { clip_id, .. } if ui_state.selection.contains(&clip_id) => {
-                        ui_state.selection.clone()
-                    }
-                    Hit::Clip { clip_id, .. } => vec![clip_id],
-                    _ => vec![],
-                };
-                let tol = (8.0 * S / ui_state.px_per_sec).round() as Time;
-                let raw = lay.x_to_time(x.max(HEADER)).max(0);
-                crate::snap(raw, &project, ui_state, &exclude, tol)
+                (pointer_time(x, &from, ui_state), row_at(y))
             };
-            let to_track = if click { hit_track(&from) } else { row_at(y) };
             crate::drag(
                 Drag {
                     from,
@@ -306,8 +372,7 @@ impl App {
         if resp.drag_started()
             && let Some(p) = press_pos
         {
-            let (x, y) = local(p);
-            self.press = Some(lay.hit(&project, seq.id, x, y));
+            self.press = Some(pressed(p, &t.ui));
         }
         if let (Some(from), Some(p)) = (self.press, pos) {
             if resp.dragged() {
@@ -315,9 +380,8 @@ impl App {
                     // Live scrubbing: a ruler drag only moves the playhead.
                     ops.extend(finish(from, p, &mut t.ui, false));
                 } else {
-                    let (_, y) = local(p);
-                    let (x, _) = local(p);
-                    let to = lay.x_to_time(x.max(HEADER)).max(0);
+                    let (x, y) = local(p);
+                    let to = pointer_time(x, &from, &t.ui);
                     preview(
                         &area_painter,
                         &project,
@@ -339,8 +403,7 @@ impl App {
         if resp.clicked()
             && let Some(p) = press_pos.or(pos)
         {
-            let (x, y) = local(p);
-            let from = lay.hit(&project, seq.id, x, y);
+            let from = pressed(p, &t.ui);
             ops.extend(finish(from, p, &mut t.ui, true));
         }
         if resp.hovered() {
@@ -348,6 +411,8 @@ impl App {
             if mods.command && d.y != 0.0 {
                 let f = if d.y > 0.0 { 1.1 } else { 1.0 / 1.1 };
                 t.ui.px_per_sec = (t.ui.px_per_sec * f).clamp(1.0, 2000.0);
+            } else if d.y != 0.0 && max_scroll > 0.0 && !mods.shift {
+                self.timeline_scroll_y = (sy - d.y).clamp(0.0, max_scroll);
             } else if d.x + d.y != 0.0 {
                 let dt = (-(d.x + d.y) as f64 * S / t.ui.px_per_sec) as Time;
                 t.ui.scroll = (t.ui.scroll + dt).max(0);
@@ -408,6 +473,26 @@ impl App {
             name: None,
         };
         self.edit(vec![cmd]);
+    }
+}
+
+/// The hit with its time replaced (by the snapped pointer time).
+fn with_time(h: Hit, t: Time) -> Hit {
+    match h {
+        Hit::Ruler { .. } => Hit::Ruler { time: t },
+        Hit::Clip {
+            clip_id,
+            track_id,
+            part,
+            ..
+        } => Hit::Clip {
+            clip_id,
+            track_id,
+            part,
+            time: t,
+        },
+        Hit::Empty { track_id, .. } => Hit::Empty { track_id, time: t },
+        h => h,
     }
 }
 

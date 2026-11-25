@@ -97,8 +97,9 @@ fn gui(args: &[&str]) -> ExitCode {
     while let Some(&a) = it.next() {
         match a {
             "--port" => match it.next().map(|p| p.parse::<u16>()) {
-                Some(Ok(p)) => port = p,
-                Some(Err(_)) => return usage("invalid port"),
+                // Port 0 would bind a random port the user cannot know (U-FIX-13).
+                Some(Ok(p)) if p != 0 => port = p,
+                Some(_) => return usage("invalid port"),
                 None => return usage("--port needs a value"),
             },
             _ if a.starts_with('-') => return usage(&format!("unknown option {a:?}")),

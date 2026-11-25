@@ -66,8 +66,17 @@ fn edit_points(s: &Sequence) -> Vec<Time> {
 }
 
 /// Clips of `ids` plus (when asked) their linked sets (SPEC R6), in track then time order.
-/// Ids that do not exist are dropped.
+/// Ids that do not exist are dropped; so are clips on locked tracks (U-FIX-1).
 fn with_links(s: &Sequence, ids: &[Id], linked: bool) -> Vec<Id> {
+    linked_set(s, ids, linked)
+        .into_iter()
+        .filter(|&(_, locked)| !locked)
+        .map(|(id, _)| id)
+        .collect()
+}
+
+/// `with_links` before dropping locked clips: `(id, on a locked track)`.
+fn linked_set(s: &Sequence, ids: &[Id], linked: bool) -> Vec<(Id, bool)> {
     let links: Vec<Id> = if linked {
         all_clips(s)
             .filter(|c| ids.contains(&c.id))
@@ -76,9 +85,11 @@ fn with_links(s: &Sequence, ids: &[Id], linked: bool) -> Vec<Id> {
     } else {
         Vec::new()
     };
-    all_clips(s)
-        .filter(|c| ids.contains(&c.id) || c.link.is_some_and(|l| links.contains(&l)))
-        .map(|c| c.id)
+    s.tracks
+        .iter()
+        .flat_map(|t| t.clips.iter().map(move |c| (c, t.locked)))
+        .filter(|(c, _)| ids.contains(&c.id) || c.link.is_some_and(|l| links.contains(&l)))
+        .map(|(c, locked)| (c.id, locked))
         .collect()
 }
 
@@ -271,7 +282,7 @@ pub(crate) fn perform(action: Action, project: &Project, ui: &mut UiState) -> Ve
         }
         Action::AddEdit => {
             let sel = effective(s, ui);
-            if !sel.is_empty() {
+            if !existing(s, ui).is_empty() {
                 return edit(
                     clips_by_id(s, &sel)
                         .into_iter()
@@ -332,12 +343,26 @@ pub(crate) fn perform(action: Action, project: &Project, ui: &mut UiState) -> Ve
             }
         }
         Action::Delete | Action::RippleDelete => {
-            let clip_ids = existing(s, ui);
+            let all = linked_set(s, &existing(s, ui), ui.linked_selection);
+            let mut clip_ids: Vec<Id> = existing(s, ui)
+                .into_iter()
+                .filter(|id| all.contains(&(*id, false)))
+                .collect();
             if clip_ids.is_empty() {
                 return vec![];
             }
             ui.selection.clear();
-            let include_linked = ui.linked_selection;
+            let mut include_linked = ui.linked_selection;
+            // A linked partner on a locked track would make the core reject the batch: name the
+            // unlocked clips explicitly instead (U-FIX-14).
+            if include_linked
+                && linked_set(s, &clip_ids, true)
+                    .iter()
+                    .any(|&(_, locked)| locked)
+            {
+                clip_ids = with_links(s, &clip_ids, true);
+                include_linked = false;
+            }
             return edit(vec![if action == Action::Delete {
                 Command::RemoveClips {
                     clip_ids,
@@ -793,7 +818,7 @@ pub(crate) fn drag(d: Drag, project: &Project, ui: &mut UiState) -> Vec<Op> {
                 ui.selection.push(c.id);
             }
         }
-        (Tool::Select | Tool::Ripple | Tool::Roll, Some(c)) if part != ClipPart::Body => {
+        (Tool::Select | Tool::Ripple | Tool::Roll, Some(c)) if part != ClipPart::Body && !click => {
             let mode = match tool {
                 Tool::Ripple => TrimMode::Ripple,
                 Tool::Roll => TrimMode::Roll,

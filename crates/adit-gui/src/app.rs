@@ -27,11 +27,62 @@ struct Tab {
     ui: UiState,
 }
 
+/// Modal dialogs. Each remembers the project and clips it acts on (U-FIX-6).
 enum Dialog {
-    Speed { percent: f64, ripple: bool },
-    Gain { db: f64 },
-    Wand { text: String },
+    Speed {
+        pid: String,
+        clips: Vec<Id>,
+        linked: bool,
+        percent: f64,
+        ripple: bool,
+    },
+    Gain {
+        pid: String,
+        clips: Vec<Id>,
+        db: f64,
+    },
+    Wand {
+        pid: String,
+        sequence_id: Id,
+        clips: Vec<Id>,
+        mark_in: Option<Time>,
+        mark_out: Option<Time>,
+        rect: Option<[f64; 4]>,
+        text: String,
+    },
     ConfirmClose,
+    CloseProject {
+        pid: String,
+        name: String,
+    },
+}
+
+impl Dialog {
+    fn project(&self) -> Option<&str> {
+        match self {
+            Dialog::Speed { pid, .. }
+            | Dialog::Gain { pid, .. }
+            | Dialog::Wand { pid, .. }
+            | Dialog::CloseProject { pid, .. } => Some(pid),
+            Dialog::ConfirmClose => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum TextField {
+    Content,
+    Font,
+    AudioFilter,
+}
+
+/// Text typed into an Effect Controls field, held until the field loses focus (U-FIX-5).
+struct TextBuf {
+    pid: String,
+    clip: Id,
+    field: TextField,
+    widget: egui::Id,
+    value: String,
 }
 
 /// The egui application (GUI.md U-APP-*).
@@ -59,9 +110,13 @@ pub struct App {
     effects_at: Option<(String, u64)>,
     /// Effect Controls values being dragged, committed on release.
     fx_drag: HashMap<String, f64>,
-    /// Audio filter text being typed.
-    fx_text: Option<(Id, String)>,
+    text_buf: Option<TextBuf>,
+    /// Media path -> readable (`None` while the check runs) (U-FIX-11).
+    offline: HashMap<String, Option<bool>>,
+    offline_check: worker::Checker,
     show_effect_controls: bool,
+    /// Vertical scroll of the timeline track rows, px (U-FIX-7).
+    timeline_scroll_y: f32,
     show_effects: bool,
     /// Something other than this window changed a project or called a `ui_*` tool.
     client_seen: bool,
@@ -98,8 +153,11 @@ impl App {
             effects: Vec::new(),
             effects_at: None,
             fx_drag: HashMap::new(),
-            fx_text: None,
+            text_buf: None,
+            offline: HashMap::new(),
+            offline_check: worker::Checker::new(&ctx, &session),
             show_effect_controls: false,
+            timeline_scroll_y: 0.0,
             show_effects: false,
             client_seen: false,
             allow_close: false,
@@ -143,7 +201,33 @@ impl App {
         };
         let project = t.project.clone();
         let ops = crate::perform(action, &project, &mut t.ui);
+        if ops.is_empty() {
+            self.explain_locked(action);
+        }
         self.apply(ops);
+    }
+
+    /// An edit that did nothing because every clip it would touch is on a locked track (U-FIX-1)
+    /// says so, as the core would (U-APP-9).
+    fn explain_locked(&mut self, action: Action) {
+        let edits = matches!(
+            action,
+            Action::AddEdit
+                | Action::Delete
+                | Action::RippleDelete
+                | Action::Nudge(_)
+                | Action::ToggleEnable
+        );
+        let Some(t) = self.tab().filter(|_| edits) else {
+            return;
+        };
+        let locked = t.ui.selection.iter().find_map(|&id| {
+            let (_, track, _) = t.project.clip(id)?;
+            track.locked.then_some(track.id)
+        });
+        if let Some(track) = locked {
+            self.status = format!("track {track} is locked");
+        }
     }
 
     fn tab(&self) -> Option<&Tab> {
@@ -161,6 +245,19 @@ impl App {
         let infos = self.session.projects();
         let active = self.project_id().map(str::to_string);
         let n = self.tabs.len();
+        for t in self
+            .tabs
+            .iter()
+            .filter(|t| !infos.iter().any(|i| i.id == t.id))
+        {
+            // By name only when work was lost; otherwise by id, so a closed project's name leaves
+            // the window with its tab (U-APP-3 vs U-FIX-10).
+            self.status = if t.dirty && t.revision > 0 {
+                format!("project {} was closed with unsaved changes", t.name)
+            } else {
+                format!("project {} was closed", t.id)
+            };
+        }
         self.tabs.retain(|t| infos.iter().any(|i| i.id == t.id));
         let mut changed = self.tabs.len() != n;
         for info in &infos {
@@ -183,6 +280,7 @@ impl App {
             }
         }
         self.client_seen |= changed;
+        self.check_media();
         self.active = active
             .and_then(|id| self.tabs.iter().position(|t| t.id == id))
             .unwrap_or(self.active)
@@ -220,18 +318,106 @@ impl App {
         r
     }
 
-    /// One atomic batch through the `edit` tool.
+    /// One atomic batch through the `edit` tool, on the active project.
     fn edit(&mut self, commands: Vec<Command>) -> Option<Value> {
+        let pid = self.project_id()?.to_string();
+        self.edit_in(&pid, commands)
+    }
+
+    /// One atomic batch on a given project.
+    fn edit_in(&mut self, pid: &str, commands: Vec<Command>) -> Option<Value> {
         if commands.is_empty() {
             return None;
         }
-        match serde_json::to_value(&commands) {
-            Ok(c) => self.pcall("edit", json!({ "commands": c })),
+        let r = match serde_json::to_value(&commands) {
+            Ok(c) => self.call("edit", json!({ "project_id": pid, "commands": c })),
             Err(e) => {
                 self.status = e.to_string();
                 None
             }
+        };
+        let infos = self.session.projects();
+        if let Some(t) = self.tabs.iter_mut().find(|t| t.id == pid) {
+            if let Some(info) = infos.iter().find(|i| i.id == pid) {
+                t.dirty = info.dirty;
+            }
+            refresh(t, &self.session);
         }
+        r
+    }
+
+    /// Starts a readability check for new media; reports offline media once (U-FIX-11).
+    fn check_media(&mut self) {
+        for t in &self.tabs {
+            for m in t.project.media.iter().filter(|m| m.spec.video.is_some()) {
+                if !self.offline.contains_key(&m.spec.path) {
+                    self.offline.insert(m.spec.path.clone(), None);
+                    self.offline_check.request(m.spec.path.clone());
+                }
+            }
+        }
+        while let Some((path, ok)) = self.offline_check.result() {
+            if !ok {
+                let name = self
+                    .tabs
+                    .iter()
+                    .flat_map(|t| &t.project.media)
+                    .find(|m| m.spec.path == path)
+                    .map_or(path.clone(), |m| m.spec.name.clone());
+                self.status = format!("media offline: {name}");
+            }
+            self.offline.insert(path, Some(ok));
+        }
+    }
+
+    /// Commits held Effect Controls text once its field lost focus or the clip changed (U-FIX-5).
+    fn commit_text(&mut self, ctx: &egui::Context) {
+        let Some(b) = &self.text_buf else { return };
+        let focused = ctx.memory(|m| m.has_focus(b.widget));
+        let same_clip = self.project_id() == Some(b.pid.as_str())
+            && self.selected_clip().map(|c| c.id) == Some(b.clip);
+        if focused && same_clip {
+            return;
+        }
+        let Some(b) = self.text_buf.take() else {
+            return;
+        };
+        let Some((p, _)) = self.session.snapshot(&b.pid) else {
+            return;
+        };
+        let Some((_, _, clip)) = p.clip(b.clip) else {
+            return;
+        };
+        let cmd = match (b.field, &clip.source) {
+            (TextField::AudioFilter, _) if clip.audio_filter != b.value => Command::SetClip {
+                clip_id: b.clip,
+                name: None,
+                enabled: None,
+                reverse: None,
+                blend: None,
+                audio_filter: Some(b.value),
+            },
+            (TextField::Content, adit_core::ClipSource::Text { text })
+                if text.content != b.value =>
+            {
+                let mut text = text.clone();
+                text.content = b.value;
+                Command::SetText {
+                    clip_id: b.clip,
+                    text,
+                }
+            }
+            (TextField::Font, adit_core::ClipSource::Text { text }) if text.font != b.value => {
+                let mut text = text.clone();
+                text.font = b.value;
+                Command::SetText {
+                    clip_id: b.clip,
+                    text,
+                }
+            }
+            _ => return,
+        };
+        self.edit_in(&b.pid, vec![cmd]);
     }
 
     fn apply(&mut self, ops: Vec<Op>) {
@@ -251,16 +437,36 @@ impl App {
                 Op::Export => self.export(),
                 Op::SpeedDialog => {
                     let percent = self.selected_clip().map_or(100.0, |c| c.speed * 100.0);
+                    let Some(t) = self.tab() else { continue };
                     self.dialog = Some(Dialog::Speed {
+                        pid: t.id.clone(),
+                        clips: existing_selection(t),
+                        linked: t.ui.linked_selection,
                         percent,
                         ripple: false,
                     });
                 }
-                Op::GainDialog => self.dialog = Some(Dialog::Gain { db: 0.0 }),
+                Op::GainDialog => {
+                    let Some(t) = self.tab() else { continue };
+                    self.dialog = Some(Dialog::Gain {
+                        pid: t.id.clone(),
+                        clips: existing_selection(t),
+                        db: 0.0,
+                    });
+                }
                 Op::WandPrompt => {
-                    self.dialog = Some(Dialog::Wand {
+                    let Some(t) = self.tab() else { continue };
+                    let d = Dialog::Wand {
+                        pid: t.id.clone(),
+                        sequence_id: t.ui.sequence_id,
+                        clips: existing_selection(t),
+                        mark_in: t.ui.mark_in,
+                        mark_out: t.ui.mark_out,
+                        rect: self.wand_rect,
                         text: String::new(),
-                    })
+                    };
+                    self.wand_rect = None;
+                    self.dialog = Some(d);
                 }
             }
         }
@@ -431,53 +637,21 @@ impl App {
         }
     }
 
-    /// `ui_set` changes queued by the bridge, applied on the UI thread.
+    /// `ui_set` changes queued by the bridge (validated and rounded there), in call order.
     fn apply_bridge(&mut self) {
         for s in self.shared.take_pending() {
             if let Some(pid) = &s.project_id {
                 self.activate(pid);
             }
-            let Some(t) = self.tabs.get_mut(self.active) else {
-                continue;
-            };
-            let fps = t.project.sequence(t.ui.sequence_id).map(|q| q.fps);
-            let round = |x: Time| fps.map_or(x, |f| frame(x, f));
-            if let Some(p) = s.playhead {
-                t.ui.playhead = round(p);
-            }
-            if let Some(m) = s.mark_in {
-                t.ui.mark_in = m.map(round);
-            }
-            if let Some(m) = s.mark_out {
-                t.ui.mark_out = m.map(round);
-            }
-            if let Some(sel) = s.selection {
-                t.ui.selection = sel;
-            }
-            if let Some(tool) = s.tool {
-                t.ui.tool = tool;
+            if let Some(t) = self.tabs.get_mut(self.active) {
+                s.apply(&mut t.ui);
             }
         }
     }
 
-    fn mirror(&self) -> Option<Value> {
-        let t = self.tab()?;
-        let u = &t.ui;
-        Some(json!({
-            "project_id": t.id,
-            "sequence_id": u.sequence_id,
-            "playhead": u.playhead,
-            "playhead_s": u.playhead as f64 / S,
-            "selection": u.selection,
-            "mark_in": u.mark_in,
-            "mark_out": u.mark_out,
-            "tool": bridge::tool_name(u.tool),
-            "playing": u.playing,
-        }))
-    }
-
-    fn any_dirty(&self) -> bool {
-        self.tabs.iter().any(|t| t.dirty)
+    /// Unsaved work worth asking about: a dirty project that was ever changed (U-FIX-10).
+    fn any_unsaved(&self) -> bool {
+        self.tabs.iter().any(|t| t.dirty && t.revision > 0)
     }
 }
 
@@ -493,6 +667,16 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         self.sync();
         self.apply_bridge();
+        self.commit_text(&ctx);
+        if let Some(pid) = self.dialog.as_ref().and_then(Dialog::project)
+            && !self.tabs.iter().any(|t| t.id == pid)
+        {
+            self.status = format!("project {pid} is closed; its dialog was dismissed");
+            self.dialog = None;
+        }
+        if matches!(self.dialog, Some(Dialog::ConfirmClose)) && !self.any_unsaved() {
+            self.dialog = None;
+        }
         if self.shared.take_touched() {
             self.client_seen = true;
         }
@@ -519,16 +703,24 @@ impl eframe::App for App {
         }
         self.monitors.upload(&ctx);
 
-        if ctx.input(|i| i.viewport().close_requested()) && self.any_dirty() && !self.allow_close {
+        if ctx.input(|i| i.viewport().close_requested()) && self.any_unsaved() && !self.allow_close
+        {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.dialog = Some(Dialog::ConfirmClose);
         }
 
         self.draw(ui);
 
-        // Keep polling the session for edits made over MCP (U-APP-3).
-        ctx.request_repaint_after(Duration::from_millis(100));
-        self.shared.set_mirror(self.mirror());
+        // Poll the session for edits made over MCP (U-APP-3), when idle at most every 500 ms
+        // (U-FIX-13). Bridge calls, finished renders and playback wake the window themselves.
+        ctx.request_repaint_after(Duration::from_millis(500));
+        self.shared.set_mirror(
+            self.project_id().map(str::to_string),
+            self.tabs
+                .iter()
+                .map(|t| (t.id.clone(), t.ui.clone()))
+                .collect(),
+        );
         self.shots.append(&mut self.shared.take_shots());
         if self.shots.is_empty() {
             return;
@@ -563,6 +755,15 @@ pub fn run(session: Session, options: Options) -> Result<(), String> {
         Box::new(move |cc| Ok(Box::new(App::new(cc, session, options)))),
     )
     .map_err(|e| e.to_string())
+}
+
+/// Selected clip ids that still exist.
+fn existing_selection(t: &Tab) -> Vec<Id> {
+    t.ui.selection
+        .iter()
+        .copied()
+        .filter(|&id| t.project.clip(id).is_some())
+        .collect()
 }
 
 fn new_tab(session: &Session, info: &ProjectInfo) -> Option<Tab> {

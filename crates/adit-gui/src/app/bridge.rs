@@ -1,20 +1,22 @@
-//! `UiBridge` for the `ui_*` MCP tools (U-APP-8). Called on MCP threads; it only touches shared
-//! state and never waits for the UI thread except in `screenshot`.
+//! `UiBridge` for the `ui_*` MCP tools (U-APP-8, U-FIX-9). Called on MCP threads; it only touches
+//! shared state and never waits for the UI thread except in `screenshot`.
 
-use crate::Tool;
-use adit_core::{Id, Time};
+use crate::{Tool, UiState};
+use adit_core::{Id, MAX_TIME, Time, frame_to_time, time_to_frame};
 use adit_mcp::{Image, Session, UiBridge};
 use eframe::egui;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{SyncSender, sync_channel};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-/// A validated `ui_set`, applied by the window at the start of its next frame.
-#[derive(Default)]
+/// A validated `ui_set`, times already rounded to frames; applied by the window next frame.
+#[derive(Default, Clone)]
 pub struct UiSet {
     pub project_id: Option<String>,
+    /// Switches sequence: playhead 0, selection and marks cleared (U-FIX-8).
+    pub sequence_id: Option<Id>,
     pub playhead: Option<Time>,
     pub selection: Option<Vec<Id>>,
     pub mark_in: Option<Option<Time>>,
@@ -22,11 +24,54 @@ pub struct UiSet {
     pub tool: Option<Tool>,
 }
 
+impl UiSet {
+    /// Everything except the project switch.
+    pub fn apply(&self, ui: &mut UiState) {
+        if let Some(seq) = self.sequence_id {
+            switch_sequence(ui, seq);
+        }
+        if let Some(p) = self.playhead {
+            ui.playhead = p;
+        }
+        if let Some(m) = self.mark_in {
+            ui.mark_in = m;
+        }
+        if let Some(m) = self.mark_out {
+            ui.mark_out = m;
+        }
+        if let Some(s) = &self.selection {
+            ui.selection.clone_from(s);
+        }
+        if let Some(t) = self.tool {
+            ui.tool = t;
+        }
+    }
+}
+
+/// U-FIX-8: a fresh view of another sequence.
+pub fn switch_sequence(ui: &mut UiState, seq: Id) {
+    if ui.sequence_id != seq {
+        ui.sequence_id = seq;
+        ui.playhead = 0;
+        ui.selection.clear();
+        ui.mark_in = None;
+        ui.mark_out = None;
+        ui.playing = false;
+        ui.shuttle = 0;
+    }
+}
+
+/// What `ui_get` answers: the window's tabs as last drawn, plus `ui_set`s accepted since.
+#[derive(Default)]
+struct Mirror {
+    active: Option<String>,
+    tabs: Vec<(String, UiState)>,
+    pending: Vec<UiSet>,
+}
+
 #[derive(Default)]
 pub struct Shared {
-    /// `ui_get` JSON of the active tab, rewritten every frame.
-    mirror: Mutex<Option<Value>>,
-    pending: Mutex<Vec<UiSet>>,
+    mirror: Mutex<Mirror>,
     shots: Mutex<Vec<SyncSender<Arc<egui::ColorImage>>>>,
     touched: AtomicBool,
 }
@@ -36,11 +81,17 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Shared {
-    pub fn set_mirror(&self, v: Option<Value>) {
-        *lock(&self.mirror) = v;
+    /// The window's state after a frame. Skipped while `ui_set`s wait to be applied: the mirror
+    /// already shows them and the next frame writes it again.
+    pub fn set_mirror(&self, active: Option<String>, tabs: Vec<(String, UiState)>) {
+        let mut m = lock(&self.mirror);
+        if m.pending.is_empty() {
+            m.active = active;
+            m.tabs = tabs;
+        }
     }
     pub fn take_pending(&self) -> Vec<UiSet> {
-        std::mem::take(&mut *lock(&self.pending))
+        std::mem::take(&mut lock(&self.mirror).pending)
     }
     pub fn take_shots(&self) -> Vec<SyncSender<Arc<egui::ColorImage>>> {
         std::mem::take(&mut *lock(&self.shots))
@@ -79,15 +130,100 @@ pub fn tool_name(t: Tool) -> &'static str {
         .map_or("select", |(_, n)| n)
 }
 
+pub fn state_json(pid: &str, u: &UiState) -> Value {
+    json!({
+        "project_id": pid,
+        "sequence_id": u.sequence_id,
+        "playhead": u.playhead,
+        "playhead_s": u.playhead as f64 / adit_core::FLICKS_PER_SECOND as f64,
+        "selection": u.selection,
+        "mark_in": u.mark_in,
+        "mark_out": u.mark_out,
+        "tool": tool_name(u.tool),
+        "playing": u.playing,
+    })
+}
+
 /// A time field: absent → `None`, `null` → `Some(None)` when `nullable`.
 fn time(v: &Value, key: &str, nullable: bool) -> Result<Option<Option<Time>>, String> {
     match v.get(key) {
         None => Ok(None),
         Some(Value::Null) if nullable => Ok(Some(None)),
         Some(x) => match x.as_i64() {
-            Some(t) if t >= 0 => Ok(Some(Some(t))),
-            _ => Err(format!("{key} must be a time >= 0, got {x}")),
+            Some(t) if (0..=MAX_TIME).contains(&t) => Ok(Some(Some(t))),
+            _ => Err(format!("{key} must be a time in 0..={MAX_TIME}, got {x}")),
         },
+    }
+}
+
+impl Bridge {
+    /// Validates a `ui_set` against the mirror and returns it with times rounded to frames.
+    fn check(&self, m: &Mirror, v: &Value) -> Result<(String, UiSet, UiState), String> {
+        if !v.is_object() {
+            return Err("ui_set takes an object".into());
+        }
+        let pid = match v.get("project_id") {
+            None | Some(Value::Null) => {
+                m.active.clone().ok_or("no project is open in the window")?
+            }
+            Some(Value::String(p)) => p.clone(),
+            Some(x) => return Err(format!("project_id must be a string, got {x}")),
+        };
+        let (p, _) = self
+            .session
+            .snapshot(&pid)
+            .ok_or_else(|| format!("unknown project_id {pid:?}"))?;
+        let mut s = UiSet {
+            project_id: Some(pid.clone()),
+            ..Default::default()
+        };
+        // A project opened a moment ago has no tab yet: it starts from the defaults.
+        let mut ui = m
+            .tabs
+            .iter()
+            .find(|(id, _)| *id == pid)
+            .map(|(_, u)| u.clone())
+            .unwrap_or_else(|| UiState::new(p.sequences.first().map_or(0, |q| q.id)));
+        if let Some(x) = v.get("sequence_id") {
+            let id = x
+                .as_u64()
+                .filter(|&id| p.sequence(id).is_some())
+                .ok_or_else(|| format!("sequence {x} not found in project {pid}"))?;
+            s.sequence_id = Some(id);
+        }
+        let fps = p
+            .sequence(s.sequence_id.unwrap_or(ui.sequence_id))
+            .map(|q| q.fps);
+        let round = |t: Time| fps.map_or(t, |f| frame_to_time(time_to_frame(t, f), f));
+        let opt = |o: Option<Option<Time>>| o.map(|x| x.map(round));
+        s.playhead = time(v, "playhead", false)?.flatten().map(round);
+        s.mark_in = opt(time(v, "mark_in", true)?);
+        s.mark_out = opt(time(v, "mark_out", true)?);
+        if let Some(t) = v.get("tool") {
+            let name = t.as_str().unwrap_or_default();
+            let tool = TOOLS
+                .iter()
+                .find(|(_, n)| n.eq_ignore_ascii_case(name))
+                .ok_or_else(|| format!("unknown tool {t}"))?;
+            s.tool = Some(tool.0);
+        }
+        if let Some(sel) = v.get("selection") {
+            let ids: Vec<Id> = sel
+                .as_array()
+                .and_then(|a| a.iter().map(Value::as_u64).collect())
+                .ok_or_else(|| format!("selection must be an array of clip ids, got {sel}"))?;
+            if let Some(bad) = ids.iter().find(|&&id| p.clip(id).is_none()) {
+                return Err(format!("clip {bad} not found in project {pid}"));
+            }
+            s.selection = Some(ids);
+        }
+        s.apply(&mut ui);
+        if let (Some(a), Some(b)) = (ui.mark_in, ui.mark_out)
+            && a >= b
+        {
+            return Err(format!("mark_in ({a}) must be before mark_out ({b})"));
+        }
+        Ok((pid, s, ui))
     }
 }
 
@@ -105,60 +241,30 @@ impl UiBridge for Bridge {
 
     fn get(&self) -> Result<Value, String> {
         self.shared.touched.store(true, Ordering::Relaxed);
-        lock(&self.shared.mirror)
-            .clone()
-            .ok_or_else(|| "no project is open in the window".to_string())
+        let m = lock(&self.shared.mirror);
+        let pid = m
+            .active
+            .as_ref()
+            .ok_or("no project is open in the window")?;
+        let (_, u) = m
+            .tabs
+            .iter()
+            .find(|(id, _)| id == pid)
+            .ok_or("no project is open in the window")?;
+        Ok(state_json(pid, u))
     }
 
     fn set(&self, v: &Value) -> Result<(), String> {
         self.shared.touched.store(true, Ordering::Relaxed);
-        if !v.is_object() {
-            return Err("ui_set takes an object".into());
+        let mut m = lock(&self.shared.mirror);
+        let (pid, s, ui) = self.check(&m, v)?;
+        match m.tabs.iter_mut().find(|(id, _)| *id == pid) {
+            Some(t) => t.1 = ui,
+            None => m.tabs.push((pid.clone(), ui)),
         }
-        let mut s = UiSet::default();
-        match v.get("project_id") {
-            None | Some(Value::Null) => {}
-            Some(Value::String(p)) => {
-                if self.session.revision(p).is_none() {
-                    return Err(format!("unknown project_id {p:?}"));
-                }
-                s.project_id = Some(p.clone());
-            }
-            Some(x) => return Err(format!("project_id must be a string, got {x}")),
-        }
-        s.playhead = time(v, "playhead", false)?.flatten();
-        s.mark_in = time(v, "mark_in", true)?;
-        s.mark_out = time(v, "mark_out", true)?;
-        if let Some(t) = v.get("tool") {
-            let name = t.as_str().unwrap_or_default();
-            let tool = TOOLS
-                .iter()
-                .find(|(_, n)| n.eq_ignore_ascii_case(name))
-                .ok_or_else(|| format!("unknown tool {t}"))?;
-            s.tool = Some(tool.0);
-        }
-        if let Some(sel) = v.get("selection") {
-            let ids: Vec<Id> = sel
-                .as_array()
-                .and_then(|a| a.iter().map(Value::as_u64).collect())
-                .ok_or_else(|| format!("selection must be an array of clip ids, got {sel}"))?;
-            let pid = match &s.project_id {
-                Some(p) => p.clone(),
-                None => lock(&self.shared.mirror)
-                    .as_ref()
-                    .and_then(|m| m["project_id"].as_str().map(str::to_string))
-                    .ok_or("no project is open in the window")?,
-            };
-            let (p, _) = self
-                .session
-                .snapshot(&pid)
-                .ok_or_else(|| format!("unknown project_id {pid:?}"))?;
-            if let Some(bad) = ids.iter().find(|&&id| p.clip(id).is_none()) {
-                return Err(format!("clip {bad} not found in project {pid}"));
-            }
-            s.selection = Some(ids);
-        }
-        lock(&self.shared.pending).push(s);
+        m.active = Some(pid);
+        m.pending.push(s);
+        drop(m);
         self.ctx.request_repaint();
         Ok(())
     }

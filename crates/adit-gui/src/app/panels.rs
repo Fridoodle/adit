@@ -1,6 +1,6 @@
 //! Layout and every panel except the timeline (U-APP-1, 4, 5, 6).
 
-use super::{App, Dialog, S, monitors, timecode};
+use super::{App, Dialog, S, TextBuf, TextField, monitors, timecode};
 use crate::{Action, SourceState, Tool};
 use adit_core::{
     BlendMode, ClipSource, Command, Easing, FLICKS_PER_SECOND, Id, ParamTarget, PlaceMode, Time,
@@ -132,8 +132,7 @@ impl App {
                     self.save(true);
                 }
                 if ui.button("Close Project").clicked() {
-                    self.pcall("project_close", json!({}));
-                    self.sync();
+                    self.close_project();
                 }
                 ui.separator();
                 item(ui, "Import...", Action::Import);
@@ -506,22 +505,18 @@ impl App {
             .filter(|x| x.kind == TrackKind::Video && !x.locked)
             .find(|x| x.clips.iter().all(|c| c.end() <= at || c.start >= at + len))
             .map(|x| x.id);
+        // One batch (U-FIX-12): a new track takes `next_id`, so the clip can name it.
+        let mut cmds = Vec::new();
         let track_id = match free {
             Some(id) => id,
             None => {
-                let add = Command::AddTrack {
+                cmds.push(Command::AddTrack {
                     sequence_id: seq_id,
                     kind: TrackKind::Video,
                     name: None,
                     index: None,
-                };
-                match self.edit(vec![add]) {
-                    Some(v) => match v["created"][0][0].as_u64() {
-                        Some(id) => id,
-                        None => return,
-                    },
-                    None => return,
-                }
+                });
+                t.project.next_id
             }
         };
         let text = adit_core::TextSpec {
@@ -533,7 +528,7 @@ impl App {
             bold: false,
             italic: false,
         };
-        let add = Command::AddClip {
+        cmds.push(Command::AddClip {
             track_id,
             linked_track_id: None,
             source: ClipSource::Text { text },
@@ -542,10 +537,9 @@ impl App {
             source_in: 0,
             mode: PlaceMode::Place,
             name: Some("Title".into()),
-        };
-        if let Some(id) = self
-            .edit(vec![add])
-            .and_then(|v| v["created"][0][0].as_u64())
+        });
+        let n = cmds.len() - 1;
+        if let Some(id) = self.edit(cmds).and_then(|v| v["created"][n][0].as_u64())
             && let Some(t) = self.tabs.get_mut(self.active)
         {
             t.ui.selection = vec![id];
@@ -675,9 +669,14 @@ impl App {
                 })
                 .collect()
         } else {
+            // Filters go only to clips on unlocked video tracks (U-FIX-13).
             t.ui.selection
                 .iter()
-                .filter(|&&id| project.clip(id).is_some())
+                .filter(|&&id| {
+                    project
+                        .clip(id)
+                        .is_some_and(|(_, tr, _)| tr.kind == TrackKind::Video && !tr.locked)
+                })
                 .map(|&clip_id| Command::AddEffect {
                     clip_id,
                     effect: name.clone(),
@@ -690,7 +689,7 @@ impl App {
             self.status = if transition {
                 "no cut at the playhead".into()
             } else {
-                "select clips to apply the effect to".into()
+                "select clips on unlocked video tracks to apply the effect to".into()
             };
         }
         self.edit(cmds);
@@ -706,6 +705,7 @@ impl App {
             return;
         };
         let clip = clip.clone();
+        let (pid, linked) = (t.id.clone(), t.ui.linked_selection);
         let kind = track.kind;
         let local = (t.ui.playhead - clip.start).clamp(0, clip.duration);
         let mut cmds: Vec<Command> = Vec::new();
@@ -893,41 +893,34 @@ impl App {
                     clip_id: clip.id,
                     speed: v / 100.0,
                     ripple: false,
-                    include_linked: true,
+                    include_linked: linked,
                 });
             }
         });
         ui.horizontal(|ui| {
             ui.label("Audio filter");
-            let text = match &mut self.fx_text {
-                Some((id, s)) if *id == clip.id => s,
-                slot => {
-                    *slot = Some((clip.id, clip.audio_filter.clone()));
-                    &mut slot.as_mut().expect("just set").1
-                }
-            };
-            let r = ui.text_edit_singleline(text);
-            if r.lost_focus() && *text != clip.audio_filter {
-                let f = text.clone();
-                cmds.push(set_clip(clip.id, |c| {
-                    if let Command::SetClip { audio_filter, .. } = c {
-                        *audio_filter = Some(f);
-                    }
-                }));
-            }
+            self.text_field(
+                ui,
+                &pid,
+                clip.id,
+                TextField::AudioFilter,
+                &clip.audio_filter,
+            );
         });
         if let ClipSource::Text { text } = &clip.source {
             ui.label("Text");
+            self.text_field(ui, &pid, clip.id, TextField::Content, &text.content);
+            ui.horizontal(|ui| {
+                ui.label("Font");
+                self.text_field(ui, &pid, clip.id, TextField::Font, &text.font);
+            });
             let mut spec = text.clone();
-            let r = ui.text_edit_multiline(&mut spec.content);
             let s = ui.add(
                 egui::DragValue::new(&mut spec.size)
                     .range(1.0..=2000.0)
                     .prefix("size "),
             );
-            if (r.lost_focus() || s.drag_stopped() || (s.changed() && !s.dragged()))
-                && spec != *text
-            {
+            if (s.drag_stopped() || (s.changed() && !s.dragged())) && spec != *text {
                 cmds.push(Command::SetText {
                     clip_id: clip.id,
                     text: spec,
@@ -935,6 +928,36 @@ impl App {
             }
         }
         self.edit(cmds);
+    }
+
+    /// A text field that keeps what is typed until focus leaves it (U-FIX-5); `App::commit_text`
+    /// commits it. The content field is multi-line, the others single-line.
+    fn text_field(
+        &mut self,
+        ui: &mut egui::Ui,
+        pid: &str,
+        clip: Id,
+        field: TextField,
+        current: &str,
+    ) {
+        let mut v = match &self.text_buf {
+            Some(b) if b.clip == clip && b.field == field && b.pid == pid => b.value.clone(),
+            _ => current.to_string(),
+        };
+        let r = if field == TextField::Content {
+            ui.add(egui::TextEdit::multiline(&mut v).desired_rows(2))
+        } else {
+            ui.add(egui::TextEdit::singleline(&mut v))
+        };
+        if r.changed() {
+            self.text_buf = Some(TextBuf {
+                pid: pid.to_string(),
+                clip,
+                field,
+                widget: r.id,
+                value: v,
+            });
+        }
     }
 
     fn requests_panel(&mut self, ui: &mut egui::Ui) {
@@ -968,20 +991,20 @@ impl App {
             return;
         };
         let mut close = false;
-        let mut cmds = Vec::new();
-        let mut send: Option<String> = None;
+        // (project, commands) to apply once the modal is drawn.
+        let mut cmds: Option<(String, Vec<Command>)> = None;
+        let mut send = false;
         let mut quit = false;
-        let sel: Vec<Id> = self.tab().map_or(vec![], |t| {
-            t.ui.selection
-                .iter()
-                .copied()
-                .filter(|&id| t.project.clip(id).is_some())
-                .collect()
-        });
-        let linked = self.ui_state().is_some_and(|u| u.linked_selection);
-        let describe = self.wand_description();
+        let mut close_project: Option<String> = None;
+        let describe = self.wand_description(&d);
         let r = egui::Modal::new(egui::Id::unique("dialog")).show(ctx, |ui| match &mut d {
-            Dialog::Speed { percent, ripple } => {
+            Dialog::Speed {
+                pid,
+                clips,
+                linked,
+                percent,
+                ripple,
+            } => {
                 ui.heading("Clip Speed");
                 ui.add(
                     egui::DragValue::new(percent)
@@ -991,26 +1014,27 @@ impl App {
                 ui.checkbox(ripple, "Ripple edit, shifting trailing clips");
                 ui.horizontal(|ui| {
                     if ui.button("OK").clicked() {
-                        cmds = sel
+                        let c = clips
                             .iter()
                             .map(|&clip_id| Command::SetClipSpeed {
                                 clip_id,
                                 speed: *percent / 100.0,
                                 ripple: *ripple,
-                                include_linked: linked,
+                                include_linked: *linked,
                             })
                             .collect();
+                        cmds = Some((pid.clone(), c));
                         close = true;
                     }
                     close |= ui.button("Cancel").clicked();
                 });
             }
-            Dialog::Gain { db } => {
+            Dialog::Gain { pid, clips, db } => {
                 ui.heading("Audio Gain");
                 ui.add(egui::DragValue::new(db).range(-96.0..=24.0).suffix(" dB"));
                 ui.horizontal(|ui| {
                     if ui.button("OK").clicked() {
-                        cmds = sel
+                        let c = clips
                             .iter()
                             .map(|&clip_id| Command::SetParam {
                                 target: ParamTarget {
@@ -1021,12 +1045,13 @@ impl App {
                                 value: *db,
                             })
                             .collect();
+                        cmds = Some((pid.clone(), c));
                         close = true;
                     }
                     close |= ui.button("Cancel").clicked();
                 });
             }
-            Dialog::Wand { text } => {
+            Dialog::Wand { text, .. } => {
                 ui.heading("Magic Wand");
                 ui.label(&describe);
                 let label = ui.label("Request");
@@ -1038,7 +1063,7 @@ impl App {
                 edit.labelled_by(label.id);
                 ui.horizontal(|ui| {
                     if ui.button("Send").clicked() && !text.trim().is_empty() {
-                        send = Some(text.clone());
+                        send = true;
                         close = true;
                     }
                     close |= ui.button("Cancel").clicked();
@@ -1055,35 +1080,75 @@ impl App {
                     close |= ui.button("Cancel").clicked();
                 });
             }
+            Dialog::CloseProject { pid, name } => {
+                ui.heading("Close project");
+                ui.label(format!("{name} has unsaved changes. Close it anyway?"));
+                ui.horizontal(|ui| {
+                    if ui.button("Close without saving").clicked() {
+                        close_project = Some(pid.clone());
+                        close = true;
+                    }
+                    close |= ui.button("Cancel").clicked();
+                });
+            }
         });
         if r.should_close() {
             close = true;
         }
-        if !close {
-            self.dialog = Some(d);
+        if let Some((pid, c)) = cmds {
+            self.edit_in(&pid, c);
         }
-        self.edit(cmds);
-        if let Some(text) = send {
-            self.send_request(text);
+        if send {
+            self.send_request(&d);
+        }
+        if let Some(pid) = close_project {
+            self.call("project_close", json!({ "project_id": pid }));
+            self.sync();
         }
         if quit {
             self.allow_close = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
-        if close {
-            self.wand_rect = None;
+        if !close {
+            self.dialog = Some(d);
         }
     }
 
-    fn wand_description(&self) -> String {
-        let Some(t) = self.tab() else {
+    /// File > Close Project; asks first when there is unsaved work (U-FIX-10).
+    fn close_project(&mut self) {
+        let Some(t) = self.tab() else { return };
+        if t.dirty && t.revision > 0 {
+            self.dialog = Some(Dialog::CloseProject {
+                pid: t.id.clone(),
+                name: t.name.clone(),
+            });
+        } else {
+            let pid = t.id.clone();
+            self.call("project_close", json!({ "project_id": pid }));
+            self.sync();
+        }
+    }
+
+    fn wand_description(&self, d: &Dialog) -> String {
+        let Dialog::Wand {
+            pid,
+            sequence_id,
+            clips,
+            mark_in,
+            mark_out,
+            rect,
+            ..
+        } = d
+        else {
             return String::new();
         };
-        let fps = t
-            .project
-            .sequence(t.ui.sequence_id)
+        let fps = self
+            .tabs
+            .iter()
+            .find(|t| t.id == *pid)
+            .and_then(|t| t.project.sequence(*sequence_id))
             .map_or(adit_core::Rational { num: 30, den: 1 }, |s| s.fps);
-        let range = match (t.ui.mark_in, t.ui.mark_out) {
+        let range = match (mark_in, mark_out) {
             (None, None) => "no range marked".to_string(),
             (a, b) => format!(
                 "range {} to {}",
@@ -1091,33 +1156,44 @@ impl App {
                 b.map_or("end".into(), |x| timecode(x, fps))
             ),
         };
-        let n = t.ui.selection.len();
-        let rect = if self.wand_rect.is_some() {
+        let rect = if rect.is_some() {
             ", a rectangle of the frame"
         } else {
             ""
         };
-        format!("{range}, {n} clip(s) selected{rect}")
+        format!("{range}, {} clip(s) selected{rect}", clips.len())
     }
 
-    /// U-APP-5: files the request for Claude.
-    fn send_request(&mut self, text: String) {
-        let Some(t) = self.tab() else { return };
+    /// U-APP-5: files the request for Claude, with what the prompt captured when it opened.
+    fn send_request(&mut self, d: &Dialog) {
+        let Dialog::Wand {
+            pid,
+            sequence_id,
+            clips,
+            mark_in,
+            mark_out,
+            rect,
+            text,
+        } = d
+        else {
+            return;
+        };
         let mut args = json!({
-            "sequence_id": t.ui.sequence_id,
+            "project_id": pid,
+            "sequence_id": sequence_id,
             "text": text,
-            "clip_ids": t.ui.selection,
+            "clip_ids": clips,
         });
-        if let Some(a) = t.ui.mark_in {
+        if let Some(a) = mark_in {
             args["start"] = json!(a);
         }
-        if let Some(b) = t.ui.mark_out {
+        if let Some(b) = mark_out {
             args["end"] = json!(b);
         }
-        if let Some(r) = self.wand_rect {
+        if let Some(r) = rect {
             args["rect"] = json!(r);
         }
-        if let Some(v) = self.pcall("request_create", args) {
+        if let Some(v) = self.call("request_create", args) {
             self.status = format!("request {} sent to Claude", v["request_id"]);
             self.polled = None;
         }
