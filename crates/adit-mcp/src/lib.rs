@@ -134,6 +134,16 @@ impl Session {
         tools::waveform(&self.inner, path)
     }
 
+    /// Asks the media backend to ready the frames `time` needs (GUI.md S-6).
+    pub fn prefetch(
+        &self,
+        project: &adit_core::Project,
+        sequence_id: adit_core::Id,
+        time: adit_core::Time,
+    ) {
+        tools::prefetch(&self.inner, project, sequence_id, time)
+    }
+
     /// `render` scaled down by `divisor` (1, 2 or 4) (GUI.md S-5).
     pub fn render_scaled(
         &self,

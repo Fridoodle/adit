@@ -43,6 +43,9 @@ pub trait MediaBackend: Send + Sync {
     /// The frame shown at source time `time` (clamped into the media).
     fn video_frame(&self, path: &str, time: Time) -> Result<Arc<Frame>, MediaError>;
 
+    /// Hint that `video_frame(path, time)` will be asked for soon (SPEC M-FRAME-5). Best effort.
+    fn prefetch(&self, _path: &str, _time: Time) {}
+
     /// Interleaved stereo f32 at `sample_rate` for the source range `[start, start + duration)`,
     /// passed through the ffmpeg audio filter chain `filter` (empty = none). The length is
     /// whatever the filter chain yields (a tempo filter changes it).
@@ -289,6 +292,20 @@ impl MediaBackend for Ffmpeg {
             time_to_frame(time.max(0), v.fps)
         };
         self.frames.get(&self.ffmpeg, path, &info, n)
+    }
+
+    fn prefetch(&self, path: &str, time: Time) {
+        // M-FRAME-5: unreadable files, audio-only files and stills need nothing ahead.
+        // shortcut: only missing files skip the probe; an existing unreadable file is reprobed on
+        // every call, cache the failure if offline-but-present media ever shows up in playback.
+        if !std::path::Path::new(path).exists() {
+            return;
+        }
+        let Ok(info) = self.info(path) else { return };
+        if let Some(v) = info.spec.video {
+            let n = time_to_frame(time.max(0), v.fps);
+            self.frames.prefetch(&self.ffmpeg, path, &info, n);
+        }
     }
 
     fn detect_silence(

@@ -1616,6 +1616,13 @@ pub fn mix(i: &Inner, p: &Project, seq: Id, start: Time, duration: Time) -> R<Ve
     adit_render::mix_audio(p, seq, start, duration, &*i.media).map_err(|e| e.to_string())
 }
 
+/// S-6: readies the media frames the sequence needs at `t`.
+pub fn prefetch(i: &Inner, p: &Project, seq: Id, t: Time) {
+    for (path, st) in adit_render::media_frames(p, seq, t) {
+        i.media.prefetch(&path, st);
+    }
+}
+
 pub fn source_frame(i: &Inner, path: &str, t: Time) -> R<Arc<Frame>> {
     i.media.video_frame(path, t).map_err(|e| e.to_string())
 }

@@ -2,9 +2,9 @@
 //! headless screenshots and export. Contract: docs/SPEC.md Part 3. Signatures here are fixed;
 //! bodies and private items are free.
 
-use adit_core::{EffectDef, Id, Project, Sequence, Time};
+use adit_core::{EffectDef, Id, Project, Sequence, TextSpec, Time};
 use adit_media::{ExportSettings, Frame, MediaBackend, MediaError};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicBool;
 
 mod audio;
@@ -40,6 +40,10 @@ pub struct Renderer {
     checked: HashSet<String>,
     /// Sequences nested above the one being rendered (0 = top level); bounds recursion.
     nest: usize,
+    /// Nested sequences already composited in the current frame, by (sequence, time, depth).
+    nested: HashMap<(Id, Time, usize), wgpu::Texture>,
+    /// Recently rasterised text layers by (spec, width, height), newest last.
+    texts: Vec<(TextSpec, u32, u32, wgpu::Texture)>,
 }
 
 impl Renderer {
@@ -51,6 +55,8 @@ impl Renderer {
             fonts: Default::default(),
             checked: HashSet::new(),
             nest: 0,
+            nested: HashMap::new(),
+            texts: Vec::new(),
         })
     }
 
@@ -100,6 +106,8 @@ impl Renderer {
         let scope = self.gpu.scope();
         // A panic caught by a caller may have left it raised.
         self.nest = 0;
+        self.nested.clear();
+        self.gpu.recycle();
         let r = (|| {
             let mut enc = self.gpu.encoder();
             let mut tex =
@@ -110,8 +118,18 @@ impl Renderer {
             }
             self.gpu.finish(enc, &tex)
         })();
+        self.nested.clear();
         scope.end(r)
     }
+}
+
+/// `(path, source time)` of every `video_frame` call rendering `time` makes (SPEC V-11).
+pub fn media_frames(project: &Project, sequence_id: Id, time: Time) -> Vec<(String, Time)> {
+    let mut out = Vec::new();
+    if let Some(seq) = project.sequence(sequence_id) {
+        compose::media_frames(project, seq, time, 0, &mut out);
+    }
+    out
 }
 
 /// The effects shipped with adit (SPEC E-BUILTIN). `wgsl` holds their real source.

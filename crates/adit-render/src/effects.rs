@@ -24,6 +24,13 @@ fn adit_texel(t: texture_2d<f32>, c: vec2i) -> vec4f {
 // Bilinear on premultiplied texels so transparent neighbours do not darken edges.
 fn adit_sample(t: texture_2d<f32>, uv: vec2f) -> vec4f {
     let x = uv * vec2f(textureDimensions(t)) - 0.5;
+    // On a texel centre (1:1 layers, integer-offset kernel taps) one load equals the four below.
+    let r = round(x);
+    if (all(abs(x - r) < vec2f(1e-3))) {
+        let c = adit_texel(t, vec2i(r));
+        if (c.a <= 0.0) { return vec4f(0.0); }
+        return vec4f(c.rgb / c.a, c.a);
+    }
     let f = floor(x);
     let w = x - f;
     let i = vec2i(f);

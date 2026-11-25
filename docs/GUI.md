@@ -337,6 +337,9 @@ Window:
 - **S-5** `render_scaled(project, sequence_id, time, divisor: u32)` → `Result<Frame, String>`: the
   frame of `render` scaled (bilinear) to `ceil(width / divisor)` x `ceil(height / divisor)`;
   `divisor` 1 equals `render`; a divisor other than 1, 2, 4 → `Err`.
+- **S-6** `prefetch(project, sequence_id, time)`: `MediaBackend::prefetch(path, t)` for every entry
+  of `adit_render::media_frames(project, sequence_id, time)`, in order. Returns nothing, never panics,
+  does not lock the session state.
 
 ## Binary
 
@@ -580,6 +583,10 @@ Layout as in Premiere Pro's editing workspace. Checked by headless UI tests (egu
   time and stops at the sequence end (forward) or at 0 (backward). Audio plays at `shuttle == 1`
   through the default output device, mixed ahead in chunks by `Session::mix`; without an audio
   device playback still runs, silent. Meters show the peak of what is playing.
+  While playing forward, a background thread calls `Session::prefetch` for every sequence frame from
+  the playhead up to `min(0.6 s * shuttle, 0.9 s)` of sequence time ahead (0.9 s keeps within a
+  reader's one-second reach, M-FRAME-5), so a cut to a new source
+  position is decoded before the playhead gets there. It never blocks the window.
 - **U-APP-8 Bridge.** The window registers a `UiBridge`: `screenshot` returns the next painted frame
   as PNG; `get`/`set` read and write the active tab's `UiState` fields named in the trait docs
   (`set` with an unknown `project_id` or a non-existent clip id → `Err`; times are rounded to
