@@ -21,7 +21,9 @@ EFFECT SHADERS (define_effect in edit; test with effect_check). An effect is WGS
 - `p.<name>: f32` for every declared parameter (names must be WGSL identifiers, unique, at most 64), in declaration order.
 You may add helper functions and constants. Do not declare bindings or entry points. Parameters can be set and keyframed per clip (set_param, set_keyframe). Example filter: `fn effect(uv: vec2f) -> vec4f { let c = src(uv); return vec4f(c.b, c.g, c.r, c.a) * vec4f(p.gain, p.gain, p.gain, 1.0); }` with parameter gain (default 1). effect_list shows the built-in effects and their source.
 
-REQUESTS. The user can point at something in the editor and say what they want; call request_wait to receive it, do the work with edit, then request_complete with a short message.
+REQUESTS. The user can point at something in the editor and say what they want; call request_wait to receive it, do the work, then request_complete with a short message. Each request has a `scope`: "edit" = change the project with edit; "import" = bring the files in `paths` into the project (media_import, then edit) as the text says; "app" = the user wants adit itself changed (`panel` and `rect` point into the window): change the source in `source_dir`, rebuild, and tell the user to restart adit.
+
+EFFECT LIBRARY. Every effect you define with define_effect is saved to the user's effect library and offered in all later projects (effect_list, origin "library"; add_effect / add_transition can name it directly). So build a new look or transition as a well-named effect with parameters, not as a one-off.
 
 Errors come back as tool results with isError true and a message naming the cause; a failed call changes nothing."#;
 

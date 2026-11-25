@@ -42,6 +42,29 @@ fn backend() -> Result<Arc<dyn MediaBackend>, String> {
     Ok(Arc::new(Ffmpeg::new().map_err(|e| e.to_string())?))
 }
 
+/// The effect library directory (MCP_TOOLS.md T-LIB-1); `None` = no library.
+fn library_dir() -> Option<std::path::PathBuf> {
+    let var = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty());
+    if let Some(d) = var("ADIT_LIBRARY") {
+        return Some(d.into());
+    }
+    let base = if cfg!(windows) {
+        var("APPDATA").map(std::path::PathBuf::from)
+    } else {
+        None
+    }
+    .or_else(|| var("XDG_CONFIG_HOME").map(Into::into))
+    .or_else(|| var("HOME").map(|h| std::path::Path::new(&h).join(".config")))?;
+    Some(base.join("adit").join("effects"))
+}
+
+fn session(b: Arc<dyn MediaBackend>) -> Session {
+    match library_dir() {
+        Some(d) => Session::with_library(b, d),
+        None => Session::new(b),
+    }
+}
+
 fn token() -> Result<String, String> {
     if let Ok(t) = std::env::var("ADIT_TOKEN")
         && !t.is_empty()
@@ -84,7 +107,7 @@ fn main() -> ExitCode {
 }
 
 fn run_server(f: impl FnOnce(Session) -> Result<(), String>) -> ExitCode {
-    match backend().and_then(|b| f(Session::new(b))) {
+    match backend().and_then(|b| f(session(b))) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => fail(e),
     }
@@ -108,7 +131,7 @@ fn gui(args: &[&str]) -> ExitCode {
         }
     }
     let session = match backend() {
-        Ok(b) => Session::new(b),
+        Ok(b) => session(b),
         Err(e) => return fail(e),
     };
     let token = match token() {

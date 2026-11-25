@@ -12,8 +12,9 @@ use adit_render::{RenderError, Renderer};
 use image::RgbaImage;
 use serde_json::{Value, json};
 use std::any::Any;
+use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
@@ -36,6 +37,10 @@ pub struct Inner {
     renderer: Mutex<Option<Renderer>>,
     /// The window the `ui_*` tools talk to.
     ui: Mutex<Option<Arc<dyn UiBridge>>>,
+    /// Effect library directory (T-LIB-1); `None` = nothing saved, nothing offered.
+    library: Option<PathBuf>,
+    /// S-4 peaks per media path.
+    waveforms: Mutex<HashMap<String, Arc<Vec<f32>>>>,
 }
 
 #[derive(Default)]
@@ -71,6 +76,9 @@ struct Request {
     end: Option<Time>,
     clip_ids: Vec<Id>,
     rect: Option<[f64; 4]>,
+    scope: &'static str,
+    panel: Option<String>,
+    paths: Vec<String>,
     status: &'static str,
     message: String,
 }
@@ -93,13 +101,15 @@ struct Job {
 }
 
 impl Inner {
-    pub fn new(media: Arc<dyn MediaBackend>) -> Self {
+    pub fn new(media: Arc<dyn MediaBackend>, library: Option<PathBuf>) -> Self {
         Inner {
             media,
             state: Mutex::new(State::default()),
             cv: Condvar::new(),
             renderer: Mutex::new(None),
             ui: Mutex::new(None),
+            library,
+            waveforms: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -650,7 +660,11 @@ const OPS: &[(&str, &str)] = &[
     ),
     (
         "set_clip",
-        "clip_id, name?, enabled?, reverse?, blend?(normal|add|multiply|screen|overlay|darken|lighten|difference), audio_filter?(ffmpeg -af chain)",
+        "clip_id, name?, enabled?, reverse?, blend?(normal|add|multiply|screen|overlay|darken|lighten|difference), audio_filter?(ffmpeg -af chain), label?(0 = none, 1..8 = a colour)",
+    ),
+    (
+        "paste_clips",
+        "items[{track_id, clip(a full clip object as project_get gives it; its start is where the copy goes, its id is ignored)}], mode?(place|overwrite)=place",
     ),
     (
         "set_text",
@@ -692,7 +706,8 @@ fn edit_description() -> String {
          fails nothing changes. `commands` is an array of objects {\"op\": <op>, ...fields}. Time \
          fields (start, end, duration, time, to, delta, source_in) take integer flicks or \"1.5s\" / \
          \"45f\" / \"00:00:01:15\". Ids are integers; `?` marks optional fields. Returns \
-         {created:[[ids created by command 0],...], undo_depth}. Ops:\n",
+         {created:[[ids created by command 0],...], undo_depth, library:[effect names saved to the \
+         effect library]}. Ops:\n",
     );
     for (op, fields) in OPS {
         s += &format!("- {op}: {fields}\n");
@@ -707,7 +722,7 @@ fn edit_description() -> String {
         .collect::<Vec<_>>()
         .join(", ");
     s += " (volume in dB). Effects used by add_effect / add_transition must exist (effect_list); a \
-          define_effect earlier in the same batch counts.";
+          define_effect earlier in the same batch counts, and so does an effect of the library.";
     s
 }
 
@@ -751,14 +766,27 @@ fn check_effect_refs(p: &Project) -> R<()> {
 
 /// Applies `c` to the scratch document after the checks the core does not do (T-EDIT), collecting
 /// the ids it creates. Earlier commands are visible to later checks, so define-then-use works.
-fn run_checked(d: &mut Document, c: &Command, out: &mut Vec<Id>) -> R<()> {
-    match c {
-        Command::Batch { commands } => {
-            for c in commands {
-                run_checked(d, c, out)?;
-            }
-            return Ok(());
+/// A failed use of an effect no definition names is left in `need` (T-LIB-4 looks it up).
+fn run_checked(
+    d: &mut Document,
+    c: &Command,
+    out: &mut Vec<Id>,
+    need: &mut Option<(String, EffectKind)>,
+) -> R<()> {
+    if let Command::Batch { commands } = c {
+        for c in commands {
+            run_checked(d, c, out, need)?;
         }
+        return Ok(());
+    }
+    let mut used = |p: &Project, name: &str, kind| {
+        check_effect(p, name, kind).inspect_err(|_| {
+            if !p.effects.iter().chain(builtins()).any(|d| d.name == name) {
+                *need = Some((name.to_string(), kind));
+            }
+        })
+    };
+    match c {
         Command::DefineEffect { def } => adit_render::validate_effect(def).map_err(|e| {
             format!(
                 "invalid effect `{}`: {}",
@@ -766,12 +794,12 @@ fn run_checked(d: &mut Document, c: &Command, out: &mut Vec<Id>) -> R<()> {
                 if e.is_empty() { "rejected" } else { &e }
             )
         })?,
-        Command::AddEffect { effect, .. } => check_effect(d.project(), effect, EffectKind::Filter)?,
+        Command::AddEffect { effect, .. } => used(d.project(), effect, EffectKind::Filter)?,
         Command::AddTransition { effect, .. }
         | Command::SetTransition {
             effect: Some(effect),
             ..
-        } => check_effect(d.project(), effect, EffectKind::Transition)?,
+        } => used(d.project(), effect, EffectKind::Transition)?,
         Command::SetClip {
             audio_filter: Some(f),
             ..
@@ -799,26 +827,136 @@ fn edit(i: &Arc<Inner>, a: A) -> R<ToolOutput> {
         convert_times(&mut c, fps).map_err(at)?;
         parsed.push(serde_json::from_value::<Command>(c).map_err(|m| at(m.to_string()))?);
     }
-    // Dry run on a copy: gives `created` per command, runs the extra checks in order, and means the
-    // real document is only touched by a batch that is known to work.
-    // shortcut: costs one extra apply per command; fine for batches of hundreds.
-    let mut scratch = Document::new(e.doc.project().clone());
-    let mut created = Vec::with_capacity(parsed.len());
-    for (n, c) in parsed.iter().enumerate() {
-        let mut ids = Vec::new();
-        run_checked(&mut scratch, c, &mut ids).map_err(|m| format!("commands[{n}]: {m}"))?;
-        created.push(ids);
-        scratch = Document::new(scratch.project().clone()); // drop the scratch undo history
-    }
-    check_effect_refs(scratch.project())?;
+    // T-LIB-4: a used effect that only the library has gets a `define_effect` in front of the batch;
+    // the dry run then starts over, so it always checks exactly what is applied.
+    let mut front: Vec<Command> = Vec::new();
+    let created = loop {
+        let mut need = None;
+        match dry_run(e.doc.project(), &front, &parsed, &mut need) {
+            Ok(c) => break c,
+            Err(m) => {
+                let Some((name, kind)) = need else {
+                    return Err(m);
+                };
+                let tried = front
+                    .iter()
+                    .any(|c| matches!(c, Command::DefineEffect { def } if def.name == name));
+                let Some(def) = i
+                    .library
+                    .as_deref()
+                    .filter(|_| !tried)
+                    .and_then(|dir| lib_load(dir, &name))
+                else {
+                    return Err(m);
+                };
+                if def.kind != kind {
+                    return Err(format!(
+                        "library effect `{name}` is a {:?} effect, not a {kind:?} effect",
+                        def.kind
+                    ));
+                }
+                front.push(Command::DefineEffect { def });
+            }
+        }
+    };
+    let mut defs = Vec::new();
+    collect_defs(&parsed, &mut defs);
     let before = e.doc.undo_depth();
+    front.extend(parsed);
     e.doc
-        .apply(Command::Batch { commands: parsed })
+        .apply(Command::Batch { commands: front })
         .map_err(|e| e.to_string())?;
     if e.doc.undo_depth() != before {
         e.changed();
     }
-    ok(json!({ "created": created, "undo_depth": e.doc.undo_depth() }))
+    let undo_depth = e.doc.undo_depth();
+    drop(st);
+    // T-LIB-2: only now, so a failed edit saves nothing; a write failure only leaves the name out.
+    let mut library: Vec<&str> = Vec::new();
+    if let Some(dir) = &i.library {
+        for d in defs.iter().filter(|d| lib_name_ok(&d.name)) {
+            let saved = std::fs::create_dir_all(dir).is_ok()
+                && dir
+                    .join(format!("{}.json", d.name))
+                    .to_str()
+                    .zip(serde_json::to_string(d).ok())
+                    .is_some_and(|(p, text)| write_atomic(p, &text).is_ok());
+            if saved && !library.contains(&d.name.as_str()) {
+                library.push(&d.name);
+            }
+        }
+    }
+    ok(json!({ "created": created, "undo_depth": undo_depth, "library": library }))
+}
+
+/// Dry run on a copy: gives `created` per command, runs the extra checks in order, and means the
+/// real document is only touched by a batch that is known to work. `front` runs first.
+// shortcut: costs one extra apply per command; fine for batches of hundreds.
+fn dry_run(
+    p: &Project,
+    front: &[Command],
+    cmds: &[Command],
+    need: &mut Option<(String, EffectKind)>,
+) -> R<Vec<Vec<Id>>> {
+    let mut scratch = Document::new(p.clone());
+    for c in front {
+        run_checked(&mut scratch, c, &mut Vec::new(), need)?;
+    }
+    let mut created = Vec::with_capacity(cmds.len());
+    for (n, c) in cmds.iter().enumerate() {
+        let mut ids = Vec::new();
+        run_checked(&mut scratch, c, &mut ids, need).map_err(|m| format!("commands[{n}]: {m}"))?;
+        created.push(ids);
+        scratch = Document::new(scratch.project().clone()); // drop the scratch undo history
+    }
+    check_effect_refs(scratch.project())?;
+    Ok(created)
+}
+
+/// Every `define_effect` of `cmds`, at any batch depth, in command order.
+fn collect_defs(cmds: &[Command], out: &mut Vec<EffectDef>) {
+    for c in cmds {
+        match c {
+            Command::DefineEffect { def } => out.push(def.clone()),
+            Command::Batch { commands } => collect_defs(commands, out),
+            _ => {}
+        }
+    }
+}
+
+// ------------------------------------------------------------------------------ effect library
+
+/// T-LIB-2: the name becomes a file name, so nothing outside `[A-Za-z0-9_-]{1,64}` gets near a
+/// path; built-in names are never library effects.
+fn lib_name_ok(name: &str) -> bool {
+    (1..=64).contains(&name.len())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        && !builtins().iter().any(|d| d.name == name)
+}
+
+/// `<dir>/<name>.json` when it is an `EffectDef` with that same name (T-LIB-6).
+// shortcut: reads the whole file whatever its size; cap it if the directory is ever shared.
+fn lib_load(dir: &Path, name: &str) -> Option<EffectDef> {
+    if !lib_name_ok(name) {
+        return None;
+    }
+    let text = std::fs::read_to_string(dir.join(format!("{name}.json"))).ok()?;
+    let def: EffectDef = serde_json::from_str(&text).ok()?;
+    (def.name == name).then_some(def)
+}
+
+/// The valid library effects in name order (T-LIB-3); read from disk on every call.
+fn lib_all(dir: &Path) -> Vec<EffectDef> {
+    let mut v: Vec<EffectDef> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|f| lib_load(dir, f.file_name().to_str()?.strip_suffix(".json")?))
+        .collect();
+    v.sort_by(|a, b| a.name.cmp(&b.name));
+    v
 }
 
 fn step(i: &Arc<Inner>, a: A, undo: bool) -> R<ToolOutput> {
@@ -837,8 +975,9 @@ fn step(i: &Arc<Inner>, a: A, undo: bool) -> R<ToolOutput> {
 
 // ------------------------------------------------------------------------------------- effects
 
-fn def_json(d: &EffectDef, builtin: bool, source: bool) -> Value {
-    let mut v = json!({ "name": d.name, "kind": d.kind, "builtin": builtin, "params": d.params });
+fn def_json(d: &EffectDef, origin: &str, source: bool) -> Value {
+    let mut v = json!({ "name": d.name, "kind": d.kind, "builtin": origin == "builtin",
+        "origin": origin, "params": d.params });
     if source {
         v["wgsl"] = Value::from(d.wgsl.clone());
     }
@@ -849,17 +988,23 @@ fn effect_list(i: &Arc<Inner>, a: A) -> R<ToolOutput> {
     let source = a.opt_bool("include_source")?.unwrap_or(false);
     let mut effects: Vec<Value> = builtins()
         .iter()
-        .map(|d| def_json(d, true, source))
+        .map(|d| def_json(d, "builtin", source))
         .collect();
+    let mut in_project = Vec::new();
     if a.get("project_id").is_some() {
         let mut st = lock(&i.state);
         let e = entry(&mut st, a.str("project_id")?)?;
+        for d in &e.doc.project().effects {
+            effects.push(def_json(d, "project", source));
+            in_project.push(d.name.clone());
+        }
+    }
+    if let Some(dir) = &i.library {
         effects.extend(
-            e.doc
-                .project()
-                .effects
+            lib_all(dir)
                 .iter()
-                .map(|d| def_json(d, false, source)),
+                .filter(|d| !in_project.contains(&d.name))
+                .map(|d| def_json(d, "library", source)),
         );
     }
     ok(json!({ "effects": effects }))
@@ -895,19 +1040,24 @@ fn effect_check(_: &Arc<Inner>, a: A) -> R<ToolOutput> {
 
 // -------------------------------------------------------------------------------------- seeing
 
-pub fn render_raw(i: &Inner, p: &Project, seq: Id, t: Time) -> R<Frame> {
+/// The frame at 1 / `divisor` of the sequence size, rounded up (S-5); 1 = sequence size.
+pub fn render_raw(i: &Inner, p: &Project, seq: Id, t: Time, divisor: u32) -> R<Frame> {
+    let s = p
+        .sequence(seq)
+        .ok_or_else(|| RenderError::SequenceNotFound(seq).to_string())?;
+    let out = (s.width.div_ceil(divisor), s.height.div_ceil(divisor));
     let mut g = lock(&i.renderer);
     if g.is_none() {
         *g = Some(Renderer::new().map_err(|e| e.to_string())?);
     }
     g.as_mut()
         .expect("just set")
-        .render_frame(p, seq, t, &*i.media)
+        .render_frame_scaled(p, seq, t, &*i.media, out)
         .map_err(|e| e.to_string())
 }
 
 fn render(i: &Inner, p: &Project, seq: Id, t: Time) -> R<RgbaImage> {
-    let f = render_raw(i, p, seq, t)?;
+    let f = render_raw(i, p, seq, t, 1)?;
     RgbaImage::from_raw(f.width, f.height, f.rgba)
         .ok_or_else(|| "the renderer returned a malformed frame".into())
 }
@@ -1249,12 +1399,23 @@ fn job_wait(i: &Arc<Inner>, a: A) -> R<ToolOutput> {
 // -------------------------------------------------------------------------------------- requests
 
 fn request_json(r: &Request) -> Value {
-    json!({
+    let mut v = json!({
         "request_id": r.id, "project_id": r.project_id, "sequence_id": r.sequence_id,
         "text": r.text, "status": r.status, "message": r.message,
         "start_s": r.start.map(secs), "end_s": r.end.map(secs), "start": r.start, "end": r.end,
         "clip_ids": r.clip_ids, "rect": r.rect,
-    })
+        "scope": r.scope, "panel": r.panel, "paths": r.paths,
+    });
+    if r.scope == "app" {
+        // T-REQ-4: the source tree this binary was built from, if it is still there.
+        v["source_dir"] = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .filter(|p| p.is_dir())
+            .map(|p| p.to_string_lossy().into_owned())
+            .into();
+    }
+    v
 }
 
 fn request_create(i: &Arc<Inner>, a: A) -> R<ToolOutput> {
@@ -1272,6 +1433,24 @@ fn request_create(i: &Arc<Inner>, a: A) -> R<ToolOutput> {
             }
         }
     };
+    let scope = match a.opt_str("scope")?.unwrap_or("edit") {
+        "edit" => "edit",
+        "app" => "app",
+        "import" => "import",
+        o => {
+            return Err(format!(
+                "`scope` must be \"edit\", \"app\" or \"import\", got {o:?}"
+            ));
+        }
+    };
+    let panel = a.opt_str("panel")?.map(str::to_string);
+    let paths = a
+        .array("paths")?
+        .into_iter()
+        .flatten()
+        .map(|v| v.as_str().map(str::to_string))
+        .collect::<Option<Vec<_>>>()
+        .ok_or("`paths` must be an array of strings")?;
     let mut st = lock(&i.state);
     let e = entry(&mut st, a.str("project_id")?)?;
     let sq = resolve_seq(e.doc.project(), a)?;
@@ -1288,6 +1467,9 @@ fn request_create(i: &Arc<Inner>, a: A) -> R<ToolOutput> {
         end,
         clip_ids,
         rect,
+        scope,
+        panel,
+        paths,
         status: "pending",
         message: String::new(),
     });
@@ -1383,6 +1565,49 @@ pub fn mix(i: &Inner, p: &Project, seq: Id, start: Time, duration: Time) -> R<Ve
 
 pub fn source_frame(i: &Inner, path: &str, t: Time) -> R<Arc<Frame>> {
     i.media.video_frame(path, t).map_err(|e| e.to_string())
+}
+
+/// S-4: 50 peaks per second, the largest |sample| of either channel per bucket.
+pub fn waveform(i: &Inner, path: &str) -> R<Arc<Vec<f32>>> {
+    if let Some(w) = lock(&i.waveforms).get(path) {
+        return Ok(w.clone());
+    }
+    // 8 kHz is plenty for a picture of the sound and keeps a long file small.
+    const RATE: u32 = 8000;
+    const CHUNK: Time = 60 * FLICKS_PER_SECOND;
+    let spec = i.media.probe(path).map_err(|e| e.to_string())?;
+    if spec.audio.is_none() {
+        return Err(format!("no audio in {path}"));
+    }
+    let total = spec
+        .duration
+        .filter(|d| *d > 0)
+        .ok_or_else(|| format!("no duration for {path}"))?;
+    let mut peaks = Vec::new();
+    let mut start = 0;
+    // shortcut: buckets restart at every 60 s chunk, so a backend that returns a few samples more
+    // or less than asked shifts later peaks slightly; carry the remainder over if that ever shows.
+    while start < total {
+        let len = CHUNK.min(total - start);
+        let pcm = i
+            .media
+            .audio(path, start, len, RATE, "")
+            .map_err(|e| e.to_string())?;
+        // Interleaved stereo: one bucket = RATE / 50 frames = 2 * RATE / 50 samples.
+        peaks.extend(
+            pcm.chunks(2 * RATE as usize / 50)
+                .map(|b| b.iter().fold(0f32, |m, s| m.max(s.abs()))),
+        );
+        start += len;
+    }
+    if peaks.is_empty() {
+        return Err(format!("no audio in {path}"));
+    }
+    // An `Err` above is not cached (T-LIB-6).
+    Ok(lock(&i.waveforms)
+        .entry(path.to_string())
+        .or_insert_with(|| Arc::new(peaks))
+        .clone())
 }
 
 pub fn set_ui(i: &Inner, ui: Option<Arc<dyn UiBridge>>) {
@@ -1729,13 +1954,24 @@ static TOOLS: &[Tool] = &[
             ("start", "time", "Start of the pointed-at range."),
             ("end", "time", "End of the pointed-at range."),
             ("clip_ids", "integers", "Clips pointed at."),
-            ("rect", "numbers", "[x, y, w, h] in 0..1 of the frame."),
+            (
+                "rect",
+                "numbers",
+                "[x, y, w, h] in 0..1 of the frame; of the window for scope app.",
+            ),
+            (
+                "scope",
+                "string",
+                "edit (default): change the project; app: change adit itself; import: bring the files in `paths` into the project as `text` says.",
+            ),
+            ("panel", "string", "Name of the window panel pointed at."),
+            ("paths", "strings", "Files for scope import."),
         ],
         run: request_create,
     },
     Tool {
         name: "request_wait",
-        description: "Block until a pending request exists (or the timeout passes), claim the oldest one and return {request: {request_id, project_id, sequence_id, text, start_s, end_s, start, end, clip_ids, rect}} or {request: null}. Answer with request_complete.",
+        description: "Block until a pending request exists (or the timeout passes), claim the oldest one and return {request: {request_id, project_id, sequence_id, text, start_s, end_s, start, end, clip_ids, rect, scope, panel, paths, source_dir (scope app only)}} or {request: null}. The server instructions say what each scope asks for. Answer with request_complete.",
         props: &[("timeout_s", "number", "Default 60, at most 300.")],
         run: request_wait,
     },

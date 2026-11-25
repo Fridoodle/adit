@@ -116,6 +116,12 @@ pub fn convert_times(cmd: &mut Value, fps: Option<Rational>) -> Result<(), Strin
     {
         *v = Value::from(parse_time("duration", v, fps)?);
     }
+    // paste_clips: items[].clip.{start, duration, source_in}
+    if let Some(Value::Array(items)) = o.get_mut("items") {
+        for c in items.iter_mut().filter_map(|i| i.get_mut("clip")) {
+            convert_times(c, fps)?;
+        }
+    }
     if let Some(Value::Array(subs)) = o.get_mut("commands") {
         for s in subs {
             convert_times(s, fps)?;

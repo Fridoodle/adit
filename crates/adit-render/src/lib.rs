@@ -65,10 +65,25 @@ impl Renderer {
         let seq = project
             .sequence(sequence_id)
             .ok_or(RenderError::SequenceNotFound(sequence_id))?;
-        let rgba = self.render_sized(project, seq, time, media, (seq.width, seq.height))?;
+        self.render_frame_scaled(project, sequence_id, time, media, (seq.width, seq.height))
+    }
+
+    /// `render_frame` bilinearly scaled to `out` (width, height), the scale export uses (X-1).
+    pub fn render_frame_scaled(
+        &mut self,
+        project: &Project,
+        sequence_id: Id,
+        time: Time,
+        media: &dyn MediaBackend,
+        out: (u32, u32),
+    ) -> Result<Frame, RenderError> {
+        let seq = project
+            .sequence(sequence_id)
+            .ok_or(RenderError::SequenceNotFound(sequence_id))?;
+        let rgba = self.render_sized(project, seq, time, media, out)?;
         Ok(Frame {
-            width: seq.width,
-            height: seq.height,
+            width: out.0,
+            height: out.1,
             rgba,
         })
     }

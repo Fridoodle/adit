@@ -37,14 +37,15 @@ pub struct ToolInfo {
 impl Session {
     pub fn new(media: Arc<dyn MediaBackend>) -> Self {
         Session {
-            inner: Arc::new(tools::Inner::new(media)),
+            inner: Arc::new(tools::Inner::new(media, None)),
         }
     }
 
     /// With an effect library directory (MCP_TOOLS.md T-LIB-1).
     pub fn with_library(media: Arc<dyn MediaBackend>, dir: std::path::PathBuf) -> Self {
-        let _ = dir; // stub: T-LIB not implemented yet
-        Self::new(media)
+        Session {
+            inner: Arc::new(tools::Inner::new(media, Some(dir))),
+        }
     }
 
     /// Runs one tool by name with JSON arguments; exactly what the MCP server does per call.
@@ -105,7 +106,7 @@ impl Session {
         sequence_id: adit_core::Id,
         time: adit_core::Time,
     ) -> Result<adit_media::Frame, String> {
-        tools::render_raw(&self.inner, project, sequence_id, time)
+        tools::render_raw(&self.inner, project, sequence_id, time, 1)
     }
 
     /// Sequence audio of a snapshot: interleaved stereo f32 at the sequence sample rate.
@@ -130,8 +131,7 @@ impl Session {
 
     /// Audio peaks of a media file, 50 per second (GUI.md S-4).
     pub fn waveform(&self, path: &str) -> Result<Arc<Vec<f32>>, String> {
-        let _ = path;
-        Err("not implemented".into()) // stub: S-4
+        tools::waveform(&self.inner, path)
     }
 
     /// `render` scaled down by `divisor` (1, 2 or 4) (GUI.md S-5).
@@ -142,8 +142,10 @@ impl Session {
         time: adit_core::Time,
         divisor: u32,
     ) -> Result<adit_media::Frame, String> {
-        let _ = (project, sequence_id, time, divisor);
-        Err("not implemented".into()) // stub: S-5
+        if ![1, 2, 4].contains(&divisor) {
+            return Err(format!("divisor must be 1, 2 or 4, got {divisor}"));
+        }
+        tools::render_raw(&self.inner, project, sequence_id, time, divisor)
     }
 
     /// Attaches (or with `None` detaches) the window the `ui_*` tools talk to.
