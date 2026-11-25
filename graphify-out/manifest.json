@@ -18,15 +18,15 @@
     "semantic_hash": ""
   },
   "crates/adit-core/src/command.rs": {
-    "mtime": 1795603813.4921935,
-    "seen": 1795603904.5377328,
-    "ast_hash": "617de38fa2bf06e285dde71d17324191",
+    "mtime": 1795617938.3530226,
+    "seen": 1795617943.270522,
+    "ast_hash": "af6bb64dea5b2aa37f7ae887edb37639",
     "semantic_hash": ""
   },
   "crates/adit-core/src/document.rs": {
-    "mtime": 1795609459.358205,
-    "seen": 1795609601.9256983,
-    "ast_hash": "22f6fa2a322eb7ffcbfc1a35ada10135",
+    "mtime": 1795620133.187319,
+    "seen": 1795620176.801903,
+    "ast_hash": "52ccac4b4765323e801ac3c2e437feb2",
     "semantic_hash": ""
   },
   "crates/adit-core/src/error.rs": {
@@ -42,9 +42,9 @@
     "semantic_hash": ""
   },
   "crates/adit-core/src/model.rs": {
-    "mtime": 1795607597.2800727,
-    "seen": 1795607660.2774923,
-    "ast_hash": "1499c1d167b7a37ee48b518155150f00",
+    "mtime": 1795617883.8650155,
+    "seen": 1795617943.2705295,
+    "ast_hash": "01d6f589df786fc3ba204e5ea092a06c",
     "semantic_hash": ""
   },
   ".claude/CLAUDE.md": {
@@ -60,27 +60,27 @@
     "semantic_hash": ""
   },
   "docs/SPEC.md": {
-    "mtime": 1795610014.8090513,
-    "seen": 1795610108.0264146,
-    "ast_hash": "6ad45c72c3b3ea582812dfdacf1c4a14",
+    "mtime": 1795620048.0236216,
+    "seen": 1795620052.4855397,
+    "ast_hash": "a21113f71b984865b23894eeadfa3bb3",
     "semantic_hash": ""
   },
   "knowledge/INDEX.md": {
-    "mtime": 1795613245.4163518,
-    "seen": 1795613251.4323606,
-    "ast_hash": "8f37311e369f2a4bfce18722a5af96cd",
+    "mtime": 1795621752.0010676,
+    "seen": 1795621761.4961216,
+    "ast_hash": "20be75fb67a13c6edd45c8fde2aa9557",
     "semantic_hash": ""
   },
   "crates/adit-core/tests/clips.rs": {
-    "mtime": 1795607514.0523121,
-    "seen": 1795607660.2774978,
-    "ast_hash": "a788e4f15a6ccf87ff04072000e04fe6",
+    "mtime": 1795617900.1203356,
+    "seen": 1795617943.2705307,
+    "ast_hash": "c0c06bcdeabfcfc4eadc09feb46c831f",
     "semantic_hash": ""
   },
   "crates/adit-core/tests/common/mod.rs": {
-    "mtime": 1795605227.5986576,
-    "seen": 1795605311.4529207,
-    "ast_hash": "6f2e94b19dfcfefe1ac8d4f9cbabf140",
+    "mtime": 1795617883.788356,
+    "seen": 1795617943.2705321,
+    "ast_hash": "bcaea1172d7c20da917616bd94aa8034",
     "semantic_hash": ""
   },
   "crates/adit-core/tests/queries.rs": {
@@ -108,9 +108,9 @@
     "semantic_hash": ""
   },
   "crates/adit-mcp/src/lib.rs": {
-    "mtime": 1795611364.0490284,
-    "seen": 1795611504.218066,
-    "ast_hash": "5735553dea1cc0639d86ad575d040dbc",
+    "mtime": 1795620285.043696,
+    "seen": 1795620582.574958,
+    "ast_hash": "3987f91885b13ba78a2cc738c1b164ea",
     "semantic_hash": ""
   },
   "crates/adit-mcp/tests/common/mod.rs": {
@@ -204,15 +204,15 @@
     "semantic_hash": ""
   },
   "crates/adit-render/src/lib.rs": {
-    "mtime": 1795609236.8692324,
-    "seen": 1795609601.9257739,
-    "ast_hash": "25e3fc0abd434947658c1d144f1a8fc5",
+    "mtime": 1795620283.2054517,
+    "seen": 1795620582.575039,
+    "ast_hash": "2139ab009361642352fc83b0745585ca",
     "semantic_hash": ""
   },
   "crates/adit-render/tests/common/mod.rs": {
-    "mtime": 1795606826.7782152,
-    "seen": 1795606988.9643338,
-    "ast_hash": "8b066b160fd84ecc87961c0d1ebd2883",
+    "mtime": 1795617883.8184226,
+    "seen": 1795617943.2706094,
+    "ast_hash": "8af5a99a4fae0aac98b8be00b2afd51b",
     "semantic_hash": ""
   },
   "crates/adit/Cargo.toml": {
@@ -222,21 +222,21 @@
     "semantic_hash": ""
   },
   "crates/adit/src/main.rs": {
-    "mtime": 1795615715.939891,
-    "seen": 1795616302.609493,
-    "ast_hash": "10b1b22e282c266edd66b98548010d5a",
+    "mtime": 1795620285.9210346,
+    "seen": 1795620582.5750687,
+    "ast_hash": "523a13d533983977e534e2f8f018bc95",
     "semantic_hash": ""
   },
   "docs/MCP_TOOLS.md": {
-    "mtime": 1795605407.5833848,
-    "seen": 1795605413.7482624,
-    "ast_hash": "2e71972fd15957750555b0a2167e3a08",
+    "mtime": 1795622569.3797634,
+    "seen": 1795622574.4226763,
+    "ast_hash": "3fb89fd411b2125b44eac03427deec43",
     "semantic_hash": ""
   },
   "crates/adit-core/tests/history.rs": {
-    "mtime": 1795605227.6212344,
-    "seen": 1795605311.4529226,
-    "ast_hash": "3d7218a76fbf65847e465d670800f413",
+    "mtime": 1795617883.7838428,
+    "seen": 1795617943.2705348,
+    "ast_hash": "efba339a30d7f1b1ab0fbd7395872248",
     "semantic_hash": ""
   },
   "crates/adit-core/tests/params.rs": {
@@ -246,9 +246,9 @@
     "semantic_hash": ""
   },
   "crates/adit-core/tests/props.rs": {
-    "mtime": 1795605227.6367726,
-    "seen": 1795605311.4529252,
-    "ast_hash": "18c1a845f06797e26398170f55675018",
+    "mtime": 1795617883.7848425,
+    "seen": 1795617943.2705371,
+    "ast_hash": "fb1c87620a77aab63332c4541aee7b0c",
     "semantic_hash": ""
   },
   "crates/adit-core/tests/trims.rs": {
@@ -384,9 +384,9 @@
     "semantic_hash": ""
   },
   "crates/adit-core/src/engine.rs": {
-    "mtime": 1795609459.3526957,
-    "seen": 1795609601.9257011,
-    "ast_hash": "3af720deacb6ddd5f55b8795a1554701",
+    "mtime": 1795620133.2818065,
+    "seen": 1795620176.801908,
+    "ast_hash": "cb30ce4ce5cd0f8cb6bb5d4258176a66",
     "semantic_hash": ""
   },
   "knowledge/ffmpeg-subprocess-gotchas.md": {
@@ -396,27 +396,27 @@
     "semantic_hash": ""
   },
   "crates/adit-mcp/src/time.rs": {
-    "mtime": 1795606021.1257277,
-    "seen": 1795606722.7508497,
-    "ast_hash": "80cd640c3a9288b8a77a2752f107cce9",
+    "mtime": 1795620283.5108705,
+    "seen": 1795620582.5749624,
+    "ast_hash": "3215db92c503608df9dcddbba8183003",
     "semantic_hash": ""
   },
   "crates/adit-mcp/src/proto.rs": {
-    "mtime": 1795606852.4652987,
-    "seen": 1795606988.9642766,
-    "ast_hash": "6563c948b6eeb4199b577c7eb7932dd4",
+    "mtime": 1795620283.8073065,
+    "seen": 1795620582.5749605,
+    "ast_hash": "19835720089a4e59485cebe23c7e9520",
     "semantic_hash": ""
   },
   "crates/adit-mcp/src/tools.rs": {
-    "mtime": 1795611368.3814125,
-    "seen": 1795611504.2180736,
-    "ast_hash": "1f76955bd7777d73ca837448a24b27ee",
+    "mtime": 1795622849.487724,
+    "seen": 1795623362.2150807,
+    "ast_hash": "57bbfd73d6f00312d3c5ac5bb92cce19",
     "semantic_hash": ""
   },
   "crates/adit-render/src/audio.rs": {
-    "mtime": 1795609878.5696907,
-    "seen": 1795610108.0263793,
-    "ast_hash": "cdff50a7eb9c12bf5e45b6bb0bb5f982",
+    "mtime": 1795617883.8119092,
+    "seen": 1795617943.2705996,
+    "ast_hash": "a728b02fbce17b9a9ee4ae8019e6e128",
     "semantic_hash": ""
   },
   "crates/adit-render/src/builtins.rs": {
@@ -498,9 +498,9 @@
     "semantic_hash": ""
   },
   "knowledge/mutation-testing.md": {
-    "mtime": 1795609000.3782177,
-    "seen": 1795609005.041544,
-    "ast_hash": "7eb74c834c8a248057090cfd2c572eea",
+    "mtime": 1795622061.4281254,
+    "seen": 1795622111.677397,
+    "ast_hash": "2dd1626aa862a9140d5259b801cc053c",
     "semantic_hash": ""
   },
   "knowledge/wgpu-naga-headless.md": {
@@ -522,15 +522,15 @@
     "semantic_hash": ""
   },
   "crates/adit-gui/src/lib.rs": {
-    "mtime": 1795611615.1622784,
-    "seen": 1795611622.2717037,
-    "ast_hash": "00e1fe57d378ac3311a19e148f05a67b",
+    "mtime": 1795617923.7216334,
+    "seen": 1795617943.2705529,
+    "ast_hash": "c0dec21e8530426ab405c1e7986eecc1",
     "semantic_hash": ""
   },
   "docs/GUI.md": {
-    "mtime": 1795616117.988557,
-    "seen": 1795616302.6095016,
-    "ast_hash": "e78f3d839ece4b844db5e8272c71513c",
+    "mtime": 1795622569.3797634,
+    "seen": 1795622574.422674,
+    "ast_hash": "dee75e770daca55ee6475426b09de47a",
     "semantic_hash": ""
   },
   "crates/adit-gui/tests/app.rs": {
@@ -546,15 +546,15 @@
     "semantic_hash": ""
   },
   "crates/adit-gui/tests/common/mod.rs": {
-    "mtime": 1795611439.3954177,
-    "seen": 1795611504.2180495,
-    "ast_hash": "155849d19c7291e9e9e460788b463938",
+    "mtime": 1795620092.4585483,
+    "seen": 1795620101.654538,
+    "ast_hash": "5a1355624076b487408117ad7467ffb0",
     "semantic_hash": ""
   },
   "crates/adit-gui/tests/edits.rs": {
-    "mtime": 1795611432.477921,
-    "seen": 1795611504.218055,
-    "ast_hash": "1ab9c8468debe6e0bf178787ab799654",
+    "mtime": 1795617883.7958753,
+    "seen": 1795617943.2705593,
+    "ast_hash": "192c3ac2be98a7aebcb622b04542bcbe",
     "semantic_hash": ""
   },
   "crates/adit-gui/tests/geometry.rs": {
@@ -564,9 +564,9 @@
     "semantic_hash": ""
   },
   "crates/adit-gui/tests/state_keys.rs": {
-    "mtime": 1795613209.7874095,
-    "seen": 1795613251.432269,
-    "ast_hash": "559dd729e8a7a4239485c12711b12f1b",
+    "mtime": 1795620287.2219396,
+    "seen": 1795620582.5749521,
+    "ast_hash": "399109c5a4c8441f9c2218c4367c6934",
     "semantic_hash": ""
   },
   "crates/adit-gui/tests/transport.rs": {
@@ -594,33 +594,33 @@
     "semantic_hash": ""
   },
   "crates/adit-gui/src/app.rs": {
-    "mtime": 1795615982.170404,
-    "seen": 1795616302.6094275,
-    "ast_hash": "b4737caccf133de627d76126e32f0e0f",
+    "mtime": 1795623030.8963103,
+    "seen": 1795623362.2150376,
+    "ast_hash": "3253e5ead98c8c506fc7034b81eca901",
     "semantic_hash": ""
   },
   "crates/adit-gui/src/logic.rs": {
-    "mtime": 1795615328.4129355,
-    "seen": 1795616302.6094365,
-    "ast_hash": "16b00ec992b2ee1ddfc5637d27676ff0",
+    "mtime": 1795622923.8290849,
+    "seen": 1795623362.215052,
+    "ast_hash": "3531875e3ff02b34d23ad93c804c116e",
     "semantic_hash": ""
   },
   "crates/adit-gui/src/app/bridge.rs": {
-    "mtime": 1795615982.1305475,
-    "seen": 1795616302.6094294,
-    "ast_hash": "0736cf4440b8c23d59b90f0decde5708",
+    "mtime": 1795621122.084231,
+    "seen": 1795621761.4768698,
+    "ast_hash": "52b495fa1656c4f2924b6aa610255bb9",
     "semantic_hash": ""
   },
   "crates/adit-gui/src/app/monitors.rs": {
-    "mtime": 1795612959.9557836,
-    "seen": 1795613251.4322488,
-    "ast_hash": "52b259f94f9736d41846a8bc289c06c1",
+    "mtime": 1795621132.670752,
+    "seen": 1795621761.4768736,
+    "ast_hash": "f8d9cbe8f96a6e833e05180a95d188ac",
     "semantic_hash": ""
   },
   "crates/adit-gui/src/app/panels.rs": {
-    "mtime": 1795615982.1511197,
-    "seen": 1795616302.6094317,
-    "ast_hash": "66b4b003b189d94a580bbb6b83ce2bd8",
+    "mtime": 1795623164.7059216,
+    "seen": 1795623362.2150445,
+    "ast_hash": "1d4bc8bcf097b01496170cb9a9781311",
     "semantic_hash": ""
   },
   "crates/adit-gui/src/app/playback.rs": {
@@ -630,9 +630,9 @@
     "semantic_hash": ""
   },
   "crates/adit-gui/src/app/timeline.rs": {
-    "mtime": 1795615701.7000587,
-    "seen": 1795616302.6094337,
-    "ast_hash": "e82b502a5c742f44578b25874d8fd517",
+    "mtime": 1795623030.8867993,
+    "seen": 1795623362.2150474,
+    "ast_hash": "d20fbb2ca0a15c48566e92951c8ec39f",
     "semantic_hash": ""
   },
   "crates/adit-gui/src/app/worker.rs": {
@@ -642,9 +642,9 @@
     "semantic_hash": ""
   },
   "knowledge/egui-037-gui-notes.md": {
-    "mtime": 1795613244.0319006,
-    "seen": 1795613251.4323618,
-    "ast_hash": "c78dd153e0d76bacbb1380af3b8d307c",
+    "mtime": 1795623375.2335734,
+    "seen": 1795623506.6573627,
+    "ast_hash": "f2e6bfbb3d3201f7bb33cda813ac2a00",
     "semantic_hash": ""
   },
   "crates/adit-gui/tests/fix_app.rs": {
@@ -654,15 +654,57 @@
     "semantic_hash": ""
   },
   "crates/adit-gui/tests/fix_logic.rs": {
-    "mtime": 1795615173.1017072,
-    "seen": 1795615262.127937,
-    "ast_hash": "9aead37b8b3e90a0b328785991bf2952",
+    "mtime": 1795617883.7983825,
+    "seen": 1795617943.2705612,
+    "ast_hash": "8e88874e84e67eb06b44933c92719c1b",
     "semantic_hash": ""
   },
   "crates/adit/tests/gui_cli_fix.rs": {
     "mtime": 1795614890.8368728,
     "seen": 1795615262.128077,
     "ast_hash": "26bc71a03a76cdeafd885f8960f404b7",
+    "semantic_hash": ""
+  },
+  "crates/adit-core/tests/paste_label.rs": {
+    "mtime": 1795618338.3479538,
+    "seen": 1795620052.4854255,
+    "ast_hash": "df9f35ad000274004b17175562f18379",
+    "semantic_hash": ""
+  },
+  "crates/adit-gui/tests/ed_app.rs": {
+    "mtime": 1795618303.4122298,
+    "seen": 1795620052.485454,
+    "ast_hash": "999815da640b60ac49772191d1068a1a",
+    "semantic_hash": ""
+  },
+  "crates/adit-gui/tests/ed_logic.rs": {
+    "mtime": 1795620287.2219396,
+    "seen": 1795620582.574943,
+    "ast_hash": "b5799b5798c2f1c9405e6f5ef93c2dd7",
+    "semantic_hash": ""
+  },
+  "crates/adit-mcp/tests/library.rs": {
+    "mtime": 1795620029.6101956,
+    "seen": 1795620052.4854763,
+    "ast_hash": "b4867cdc9b99fb49d91ad89524bf65b0",
+    "semantic_hash": ""
+  },
+  "crates/adit-mcp/tests/session_ed.rs": {
+    "mtime": 1795620029.6167083,
+    "seen": 1795620052.4854825,
+    "ast_hash": "73407245580b9b0bfdff20bdd7fc9d93",
+    "semantic_hash": ""
+  },
+  "crates/adit-gui/tests/ed_fix.rs": {
+    "mtime": 1795622723.0229084,
+    "seen": 1795622765.3463745,
+    "ast_hash": "dc965ed1fc40d324e1bc6a8241e287f3",
+    "semantic_hash": ""
+  },
+  "crates/adit-mcp/tests/library_fix.rs": {
+    "mtime": 1795623412.398184,
+    "seen": 1795623506.6572688,
+    "ast_hash": "38351f6c6a51cdbb60cdb737c4e35b1e",
     "semantic_hash": ""
   }
 }
