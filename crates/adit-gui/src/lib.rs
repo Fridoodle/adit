@@ -350,3 +350,6 @@ pub struct Options {
 }
 
 pub use app::{App, run};
+pub use logic::{
+    BarGrab, BarPart, bar_drag, bar_grab, visible_span, zoom_at, zoom_bar, zoom_bar_total,
+};

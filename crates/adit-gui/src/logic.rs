@@ -1231,3 +1231,89 @@ pub(crate) fn context_menu(
     }
     v
 }
+
+// -------------------------------------------------------------------------------- navigation
+
+/// Time the timeline area shows (GUI.md U-NAV).
+pub fn visible_span(ui: &UiState) -> Time {
+    (ui.view_width as f64 * S as f64 / ui.px_per_sec).round() as Time
+}
+
+/// Zooms by `factor`, keeping `anchor` at the same screen x (GUI.md U-NAV-1).
+pub fn zoom_at(ui: &mut UiState, factor: f64, anchor: Time) {
+    if !factor.is_finite() || factor <= 0.0 {
+        return;
+    }
+    let new = (ui.px_per_sec * factor).clamp(1.0, 2000.0);
+    let off = (anchor.saturating_sub(ui.scroll) as f64 * ui.px_per_sec / new).round() as Time;
+    ui.scroll = anchor.saturating_sub(off).max(0);
+    ui.px_per_sec = new;
+}
+
+/// Length the zoom bar stands for (GUI.md U-NAV-2).
+pub fn zoom_bar_total(ui: &UiState, duration: Time) -> Time {
+    duration.max(ui.scroll + visible_span(ui)).max(S)
+}
+
+/// The zoom bar's thumb as fractions of the bar (GUI.md U-NAV-2).
+pub fn zoom_bar(ui: &UiState, duration: Time) -> (f64, f64) {
+    let total = zoom_bar_total(ui, duration) as f64;
+    (
+        ui.scroll as f64 / total,
+        (ui.scroll + visible_span(ui)) as f64 / total,
+    )
+}
+
+/// Part of the zoom bar's thumb a press grabbed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BarPart {
+    Thumb,
+    Start,
+    End,
+}
+
+/// The view at the press on the zoom bar (GUI.md U-NAV-2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BarGrab {
+    pub part: BarPart,
+    pub scroll: Time,
+    pub visible: Time,
+    pub total: Time,
+}
+
+pub fn bar_grab(ui: &UiState, duration: Time, part: BarPart) -> BarGrab {
+    BarGrab {
+        part,
+        scroll: ui.scroll,
+        visible: visible_span(ui),
+        total: zoom_bar_total(ui, duration),
+    }
+}
+
+/// Applies a zoom-bar drag of `d` bar widths since the press (GUI.md U-NAV-2).
+pub fn bar_drag(ui: &mut UiState, grab: &BarGrab, d: f64) {
+    if !d.is_finite() {
+        return;
+    }
+    let dt = (d * grab.total as f64).round() as Time;
+    let end0 = grab.scroll + grab.visible;
+    let pps = |span: Time| (ui.view_width as f64 * S as f64 / span as f64).clamp(1.0, 2000.0);
+    match grab.part {
+        BarPart::Thumb => {
+            ui.scroll = grab
+                .scroll
+                .saturating_add(dt)
+                .clamp(0, (grab.total - grab.visible).max(0));
+        }
+        BarPart::Start => {
+            let start = grab.scroll.saturating_add(dt).clamp(0, (end0 - 1).max(0));
+            ui.px_per_sec = pps((end0 - start).max(1));
+            ui.scroll = (end0 - visible_span(ui)).max(0);
+        }
+        BarPart::End => {
+            let end = end0.saturating_add(dt).max(grab.scroll + 1);
+            ui.px_per_sec = pps(end - grab.scroll);
+            ui.scroll = grab.scroll;
+        }
+    }
+}
