@@ -1,9 +1,10 @@
-//! Exact frame access: one persistent sequential reader per file, plus a byte-bounded LRU.
+//! Exact frame access: a few persistent sequential readers per file, plus a byte-bounded LRU.
 
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsStr;
 use std::io::Read;
 use std::process::ChildStdout;
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, sync_channel};
 use std::sync::{Arc, Mutex};
 
@@ -15,6 +16,8 @@ const CACHE_BYTES: usize = 512 << 20;
 /// Seek this far before the wanted frame: demuxers seek by dts to a keyframe, and with B-frames
 /// that keyframe's pts can lie after the target. The `select` filter drops the surplus.
 const SEEK_MARGIN_S: f64 = 1.0;
+/// Readers kept open per file (M-FRAME-6): the playing clip plus clips prefetched ahead of cuts.
+const MAX_READERS: usize = 4;
 
 type Key = (String, i64);
 
@@ -24,11 +27,21 @@ pub(crate) struct Frames {
 }
 
 struct FileDec {
-    // shortcut: one idle ffmpeg per video file touched, never reaped; cap the count when
-    // projects use many files at once.
-    reader: Option<Reader>,
+    // shortcut: up to MAX_READERS idle ffmpegs per video file touched, never reaped; cap the
+    // total when projects use many files at once.
+    readers: Vec<Arc<Slot>>,
     /// Highest frame index that may exist (exact once a reader has hit the end).
     bound: i64,
+    /// Use counter for least-recently-used eviction of readers.
+    tick: u64,
+}
+
+/// One reader. `next` mirrors `Reader::next` so a reader can be chosen without waiting for the
+/// thread that is reading from it; `i64::MAX` = closed.
+struct Slot {
+    next: AtomicI64,
+    used: AtomicU64,
+    reader: Mutex<Option<Reader>>,
 }
 
 impl Frames {
@@ -47,6 +60,27 @@ impl Frames {
         info: &Info,
         n: i64,
     ) -> Result<Arc<Frame>, MediaError> {
+        let a = self.fetch(ffmpeg, path, info, n, false)?;
+        Ok(a.expect("fetch returns a frame unless prefetching"))
+    }
+
+    /// M-FRAME-5: decodes frame `n` into the cache on a new reader unless it is cached or an open
+    /// reader reaches it. Best effort: errors are dropped.
+    pub fn prefetch(&self, ffmpeg: &OsStr, path: &str, info: &Info, n: i64) {
+        if !info.still {
+            let _ = self.fetch(ffmpeg, path, info, n, true);
+        }
+    }
+
+    /// `prefetch`: never takes over an existing reader, and returns `None`.
+    fn fetch(
+        &self,
+        ffmpeg: &OsStr,
+        path: &str,
+        info: &Info,
+        n: i64,
+        prefetch: bool,
+    ) -> Result<Option<Arc<Frame>>, MediaError> {
         let v = info.spec.video.expect("caller checked video");
         let file = lock(&self.files)
             .entry(path.to_string())
@@ -57,12 +91,12 @@ impl Frames {
                     .map(|d| time_to_frame(d - 1, v.fps).max(0))
                     .unwrap_or(i64::MAX);
                 Arc::new(Mutex::new(FileDec {
-                    reader: None,
+                    readers: Vec::new(),
                     bound,
+                    tick: 0,
                 }))
             })
             .clone();
-        let mut f = lock(&file);
         let frame = |rgba| {
             Arc::new(Frame {
                 width: v.width,
@@ -74,53 +108,118 @@ impl Frames {
         if info.still {
             let key = (path.to_string(), 0);
             if let Some(a) = lock(&self.cache).get(&key) {
-                return Ok(a);
+                return Ok(Some(a));
             }
             let a = frame(decode_still(ffmpeg, path, info)?);
             lock(&self.cache).insert(key, a.clone());
-            return Ok(a);
+            return Ok(Some(a));
         }
 
         let fps_frames = i64::from(v.fps.num.div_ceil(v.fps.den).max(1));
-        let mut n = n.min(f.bound);
+        // Reading up to one second forward is cheaper than a new process plus seek.
+        let reaches = |next: i64, n: i64| next <= n && n - next <= fps_frames;
+        let mut n = n.min(lock(&file).bound);
         let mut seek_from = None;
         loop {
             let key = (path.to_string(), n);
             if let Some(a) = lock(&self.cache).get(&key) {
-                return Ok(a);
+                return Ok((!prefetch).then_some(a));
             }
-            // Reading up to one second forward is cheaper than a new process plus seek.
-            let reuse = matches!(&f.reader, Some(r) if r.next <= n && n - r.next <= fps_frames);
-            if !reuse {
-                f.reader = None;
-                f.reader = Some(Reader::spawn(ffmpeg, path, info, seek_from.unwrap_or(n))?);
-            }
-            let r = f.reader.as_mut().expect("reader just ensured");
+            let open = {
+                let mut f = lock(&file);
+                f.tick += 1;
+                let tick = f.tick;
+                let open = f
+                    .readers
+                    .iter()
+                    .find(|s| reaches(s.next.load(Ordering::Acquire), n))
+                    .cloned();
+                if let Some(s) = &open {
+                    s.used.store(tick, Ordering::Relaxed);
+                }
+                open
+            };
+            let slot = match open {
+                Some(_) if prefetch => return Ok(None),
+                Some(s) => s,
+                None => {
+                    // Spawned with no lock held so other callers keep reading this file meanwhile.
+                    let start = seek_from.take().unwrap_or(n);
+                    let r = Reader::spawn(ffmpeg, path, info, start)?;
+                    let s = Arc::new(Slot {
+                        next: AtomicI64::new(start),
+                        used: AtomicU64::new(0),
+                        reader: Mutex::new(Some(r)),
+                    });
+                    let evicted = {
+                        let mut f = lock(&file);
+                        f.tick += 1;
+                        s.used.store(f.tick, Ordering::Relaxed);
+                        let evicted = (f.readers.len() >= MAX_READERS).then(|| {
+                            let oldest = (0..f.readers.len())
+                                .min_by_key(|&i| f.readers[i].used.load(Ordering::Relaxed))
+                                .expect("readers not empty");
+                            f.readers.remove(oldest)
+                        });
+                        f.readers.push(s.clone());
+                        evicted
+                    };
+                    // Killing its ffmpeg waits for the process: not under the file lock.
+                    drop(evicted);
+                    s
+                }
+            };
+            let mut g = lock(&slot.reader);
+            // Another thread may have read past `n` (or closed it) while this one waited.
+            let Some(r) = g.as_mut().filter(|r| reaches(r.next, n)) else {
+                continue;
+            };
             let read = r.read_to(n);
-            if read.is_err() {
-                // Its thread has ended; the next request must start a new reader.
-                f.reader = None;
+            slot.next.store(r.next, Ordering::Release);
+            match read {
+                Ok(Some(rgba)) => {
+                    // Cached before the slot is released: a caller waiting on it for this frame
+                    // then finds it instead of starting another reader.
+                    let a = frame(rgba);
+                    lock(&self.cache).insert(key, a.clone());
+                    drop(g);
+                    return Ok((!prefetch).then_some(a));
+                }
+                Err(e) => {
+                    // Its thread has ended; the next request must start a new reader.
+                    g.take();
+                    close(&file, &slot, g);
+                    return Err(e);
+                }
+                Ok(None) => {
+                    // End of stream before frame n: the file is shorter than its stated duration.
+                    let mut r = g.take().expect("reader present");
+                    close(&file, &slot, g);
+                    r.proc.wait()?;
+                    let mut f = lock(&file);
+                    // Only ever lowered: another reader may already have found the exact end.
+                    if r.next > r.start {
+                        f.bound = f.bound.min(r.next - 1);
+                        seek_from = None;
+                    } else if r.start == 0 {
+                        return Err(MediaError::Ffmpeg(format!("no video frames in {path}")));
+                    } else {
+                        f.bound = f.bound.min(r.start - 1);
+                        seek_from = Some((r.start - fps_frames).max(0));
+                    }
+                    n = n.min(f.bound);
+                }
             }
-            if let Some(rgba) = read? {
-                let a = frame(rgba);
-                lock(&self.cache).insert(key, a.clone());
-                return Ok(a);
-            }
-            // End of stream before frame n: the file is shorter than its stated duration.
-            let mut r = f.reader.take().expect("reader present");
-            r.proc.wait()?;
-            if r.next > r.start {
-                f.bound = r.next - 1;
-                seek_from = None;
-            } else if r.start == 0 {
-                return Err(MediaError::Ffmpeg(format!("no video frames in {path}")));
-            } else {
-                f.bound = r.start - 1;
-                seek_from = Some((r.start - fps_frames).max(0));
-            }
-            n = n.min(f.bound);
         }
     }
+}
+
+/// Marks `slot` closed and drops it from the file's readers. Takes the reader guard so the slot
+/// lock is released before the file lock is taken (others take file, then slot).
+fn close(file: &Mutex<FileDec>, slot: &Arc<Slot>, g: std::sync::MutexGuard<'_, Option<Reader>>) {
+    slot.next.store(i64::MAX, Ordering::Release);
+    drop(g);
+    lock(file).readers.retain(|s| !Arc::ptr_eq(s, slot));
 }
 
 fn scale(info: &Info) -> String {

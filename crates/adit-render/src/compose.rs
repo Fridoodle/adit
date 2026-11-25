@@ -371,6 +371,57 @@ impl Renderer {
     }
 }
 
+/// V-11: the `video_frame` calls `render_seq` makes, mirroring its track, transition and nesting
+/// rules (`depth` = `Renderer::nest`). Keep the two in step.
+pub(crate) fn media_frames(
+    project: &Project,
+    seq: &Sequence,
+    time: Time,
+    depth: usize,
+    out: &mut Vec<(String, Time)>,
+) {
+    let tracks = seq
+        .tracks
+        .iter()
+        .filter(|t| t.kind == TrackKind::Video && !t.hidden);
+    for track in tracks {
+        let active = track.transitions.iter().find_map(|tr| {
+            let w = window(track, tr)?;
+            (w.0 <= time && time < w.0 + tr.duration).then_some(w)
+        });
+        let clips = match active {
+            Some((_, left, right)) => [left, right],
+            None => [
+                track
+                    .clips
+                    .iter()
+                    .find(|c| c.start <= time && time < c.end()),
+                None,
+            ],
+        };
+        for clip in clips.into_iter().flatten().filter(|c| c.enabled) {
+            let t = clip.source_time(time);
+            match &clip.source {
+                ClipSource::Media { media_id } => {
+                    let m = project.media.iter().find(|m| m.id == *media_id);
+                    if let Some(m) = m.filter(|m| m.spec.video.is_some()) {
+                        let e = (m.spec.path.clone(), t);
+                        if !out.contains(&e) {
+                            out.push(e);
+                        }
+                    }
+                }
+                ClipSource::Sequence { sequence_id } if depth + 1 < MAX_NEST_DEPTH => {
+                    if let Some(nested) = project.sequence(*sequence_id) {
+                        media_frames(project, nested, t, depth + 1, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 /// A built-in clip property at `local` (Q5); every name used here is in `CLIP_PARAMS`.
 pub(crate) fn param(clip: &Clip, name: &str, local: Time) -> f64 {
     clip.param(name, local).unwrap_or(0.0)

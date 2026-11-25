@@ -294,6 +294,20 @@ impl MediaBackend for Ffmpeg {
         self.frames.get(&self.ffmpeg, path, &info, n)
     }
 
+    fn prefetch(&self, path: &str, time: Time) {
+        // M-FRAME-5: unreadable files, audio-only files and stills need nothing ahead.
+        // shortcut: only missing files skip the probe; an existing unreadable file is reprobed on
+        // every call, cache the failure if offline-but-present media ever shows up in playback.
+        if !std::path::Path::new(path).exists() {
+            return;
+        }
+        let Ok(info) = self.info(path) else { return };
+        if let Some(v) = info.spec.video {
+            let n = time_to_frame(time.max(0), v.fps);
+            self.frames.prefetch(&self.ffmpeg, path, &info, n);
+        }
+    }
+
     fn detect_silence(
         &self,
         path: &str,

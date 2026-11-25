@@ -1,7 +1,7 @@
 //! Playback clock, audio output and meters (U-APP-7).
 
 use crate::UiState;
-use adit_core::{FLICKS_PER_SECOND, Id, Project, Time};
+use adit_core::{FLICKS_PER_SECOND, Id, Project, Time, frame_to_time, time_to_frame};
 use adit_mcp::Session;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::collections::VecDeque;
@@ -21,7 +21,17 @@ pub struct Playback {
     audio_key: Option<(String, u64, Id)>,
     /// Displayed meter peaks (linear), decaying.
     pub peaks: [f32; 2],
+    /// Background prefetch of the frames ahead of the playhead, and the playhead last sent.
+    prefetch: Option<(Sender<Job>, Time)>,
 }
+
+/// Prefetch from this playhead at this shuttle speed: (project, sequence, playhead, shuttle).
+type Job = (Arc<Project>, Id, Time, i32);
+
+/// Real time the prefetch looks ahead; a cut's cold seek takes ~0.2 s (U-APP-7).
+const LOOKAHEAD_S: f64 = 0.6;
+/// Sequence time the prefetch looks ahead at most, whatever the shuttle speed.
+const MAX_AHEAD_S: f64 = 0.9;
 
 impl Playback {
     pub fn tick(
@@ -64,6 +74,19 @@ impl Playback {
         ui.playhead = super::frame(t.max(0), seq.fps);
         self.last = ui.playhead;
 
+        if ui.playing && ui.shuttle > 0 {
+            let (tx, sent) = self.prefetch.get_or_insert_with(|| {
+                let (tx, rx) = channel();
+                let s = session.clone();
+                std::thread::spawn(move || prefetcher(s, rx));
+                (tx, -1)
+            });
+            if *sent != ui.playhead {
+                let _ = tx.send((project.clone(), seq.id, ui.playhead, ui.shuttle));
+                *sent = ui.playhead;
+            }
+        }
+
         // Sound only at normal speed forward.
         let want = (ui.playing && ui.shuttle == 1).then(|| (pid.to_string(), rev, seq.id));
         if want != self.audio_key {
@@ -93,6 +116,34 @@ impl Playback {
     fn silence(&self) {
         if let Some(a) = &self.audio {
             let _ = a.tx.send(Msg::Stop);
+        }
+    }
+}
+
+/// U-APP-7: readies the media frames of every sequence frame up to `LOOKAHEAD_S * shuttle` ahead,
+/// newest playhead first; frames already reachable cost a lookup (M-FRAME-5).
+fn prefetcher(session: Session, rx: Receiver<Job>) {
+    let mut next = rx.recv().ok();
+    while let Some((project, seq_id, head, shuttle)) = next.take() {
+        if let Some(seq) = project.sequence(seq_id) {
+            // Past a reader's one-second reach the playing clip itself would look like a cut.
+            let span = (LOOKAHEAD_S * f64::from(shuttle)).min(MAX_AHEAD_S);
+            let span = (span * FLICKS_PER_SECOND as f64) as Time;
+            let first = time_to_frame(head, seq.fps) + 1;
+            for k in first..=time_to_frame(head + span, seq.fps) {
+                session.prefetch(&project, seq_id, frame_to_time(k, seq.fps));
+                // A newer playhead (seek, edit, next frame) makes the rest of this window stale.
+                if let Ok(j) = rx.try_recv() {
+                    next = Some(j);
+                    break;
+                }
+            }
+        }
+        while let Ok(j) = rx.try_recv() {
+            next = Some(j);
+        }
+        if next.is_none() {
+            next = rx.recv().ok();
         }
     }
 }

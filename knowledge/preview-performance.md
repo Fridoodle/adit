@@ -19,10 +19,13 @@ Release build, 1/2 preview, ms per frame:
 - Same nested sequence on two tracks: composited once per frame (`Renderer::nested`).
 - Text layers cached by (TextSpec, size) — CPU side was small; mostly saves the upload.
 - ffmpeg frames read ahead (2) on a thread so decode overlaps rendering.
-- After: steady 13-27 ms (GPU-only ~24). Each clip cut to a far source position still costs
-  ~180-210 ms: new ffmpeg + seek + decode from the keyframe (OBS files: keyframe every 1 s). Only
-  prefetching the next clip would hide it; one reader per file means a prefetch at another position
-  of the same file would kill the playing reader.
+- After: steady 13-27 ms (GPU-only ~24). A clip cut to a far source position costs ~180-210 ms
+  cold: new ffmpeg + seek + decode from the keyframe (OBS files: keyframe every 1 s).
+- Cut stalls: `Frames` keeps up to 4 readers per file (`Slot`, atomic `next` so a reader can be
+  picked without waiting on the thread reading it); `prefetch` only opens a reader when no open one
+  reaches the frame, so it never steals the playing reader. The window's playback thread calls
+  `Session::prefetch` (via `adit_render::media_frames`, which must mirror `render_seq`) for every
+  frame 0.6 s ahead. Worst frame at cuts 204-286 ms -> ~50-60 ms (bench paced at 30 fps).
 
 Measuring: absolute numbers drift ±30% with iGPU clocks/thermals; repeat 3x. A scratch harness that
 loads a `.adit` with `Project::from_json`, wraps `Ffmpeg` in a timing `MediaBackend` and calls

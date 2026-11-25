@@ -125,8 +125,11 @@ impl Renderer {
 
 /// `(path, source time)` of every `video_frame` call rendering `time` makes (SPEC V-11).
 pub fn media_frames(project: &Project, sequence_id: Id, time: Time) -> Vec<(String, Time)> {
-    let _ = (project, sequence_id, time);
-    Vec::new() // stub: tests first
+    let mut out = Vec::new();
+    if let Some(seq) = project.sequence(sequence_id) {
+        compose::media_frames(project, seq, time, 0, &mut out);
+    }
+    out
 }
 
 /// The effects shipped with adit (SPEC E-BUILTIN). `wgsl` holds their real source.

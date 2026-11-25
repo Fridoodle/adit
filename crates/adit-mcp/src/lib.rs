@@ -141,7 +141,7 @@ impl Session {
         sequence_id: adit_core::Id,
         time: adit_core::Time,
     ) {
-        let _ = (project, sequence_id, time); // stub: tests first
+        tools::prefetch(&self.inner, project, sequence_id, time)
     }
 
     /// `render` scaled down by `divisor` (1, 2 or 4) (GUI.md S-5).

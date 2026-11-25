@@ -584,7 +584,8 @@ Layout as in Premiere Pro's editing workspace. Checked by headless UI tests (egu
   through the default output device, mixed ahead in chunks by `Session::mix`; without an audio
   device playback still runs, silent. Meters show the peak of what is playing.
   While playing forward, a background thread calls `Session::prefetch` for every sequence frame from
-  the playhead up to `0.6 s * shuttle` of sequence time ahead (0.6 s of real time), so a cut to a new source
+  the playhead up to `min(0.6 s * shuttle, 0.9 s)` of sequence time ahead (0.9 s keeps within a
+  reader's one-second reach, M-FRAME-5), so a cut to a new source
   position is decoded before the playhead gets there. It never blocks the window.
 - **U-APP-8 Bridge.** The window registers a `UiBridge`: `screenshot` returns the next painted frame
   as PNG; `get`/`set` read and write the active tab's `UiState` fields named in the trait docs
