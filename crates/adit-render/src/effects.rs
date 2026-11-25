@@ -190,6 +190,13 @@ fn validate_inner(def: &EffectDef) -> Result<(), String> {
         }
         m
     })?;
+    // H-2: an override without a pipeline constant fails at pipeline creation, after validation.
+    if let Some((_, o)) = module.overrides.iter().next() {
+        return Err(format!(
+            "effect code must not declare `override` constants (found `{}`); use params instead",
+            o.name.as_deref().unwrap_or("?")
+        ));
+    }
     if let Some(ep) = module.entry_points.first() {
         return Err(format!(
             "effect code must not declare entry points (found `{}`); adit supplies them",
@@ -238,7 +245,108 @@ fn validate_inner(def: &EffectDef) -> Result<(), String> {
     Ok(())
 }
 
+const MAX_WGSL_BYTES: usize = 65_536;
+const MAX_NESTING: usize = 64;
+/// naga (and wgpu's backend compile) recurse on the caller's stack, also over operator chains the
+/// bracket limit does not see: 65,536 bytes of `!!!...x` or `1+1+...` needed 256-512 MiB in a
+/// debug build (measured). This is a reservation; only touched pages are committed.
+const COMPILER_STACK: usize = 1 << 30;
+
+/// Runs `f` on a thread with `COMPILER_STACK` and waits for it; a panic becomes `Err`.
+pub(crate) fn on_big_stack<T: Send>(f: impl FnOnce() -> T + Send) -> Result<T, String> {
+    std::thread::scope(|s| {
+        std::thread::Builder::new()
+            .stack_size(COMPILER_STACK)
+            .spawn_scoped(s, f)
+            .map_err(|e| format!("cannot start the shader compiler thread: {e}"))?
+            .join()
+            .map_err(|_| "shader compiler crashed on this input".to_string())
+    })
+}
+
+/// Same set as naga's lexer, so a comment ends exactly where naga resumes parsing.
+fn is_comment_end(c: char) -> bool {
+    matches!(c, '\u{a}'..='\u{d}' | '\u{85}' | '\u{2028}' | '\u{2029}')
+}
+
+/// Deepest `(` / `[` / `{` nesting (H-1). Comments are skipped the way naga's lexer skips them
+/// (line comments end at any line break, block comments nest), so a bracket in a comment neither
+/// counts nor can hide code from the check. WGSL has no string literals.
+fn nesting_depth(s: &str) -> usize {
+    let (mut depth, mut max) = (0usize, 0usize);
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '(' | '[' | '{' => {
+                depth += 1;
+                max = max.max(depth);
+            }
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            '/' => match chars.clone().next() {
+                Some('/') => {
+                    chars.find(|&c| is_comment_end(c));
+                }
+                Some('*') => {
+                    chars.next();
+                    // Mirrors naga: the character right after `/*` only seeds `prev`.
+                    let mut prev = chars.next();
+                    let mut open = 1;
+                    for c in chars.by_ref() {
+                        match (prev, c) {
+                            (Some('*'), '/') => {
+                                prev = None;
+                                open -= 1;
+                                if open == 0 {
+                                    break;
+                                }
+                            }
+                            (Some('/'), '*') => {
+                                prev = None;
+                                open += 1;
+                            }
+                            _ => prev = Some(c),
+                        }
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+    max
+}
+
 pub(crate) fn validate(def: &EffectDef) -> Result<(), String> {
-    std::panic::catch_unwind(|| validate_inner(def))
-        .unwrap_or_else(|_| Err("shader compiler crashed on this input".into()))
+    // H-1: checked before naga sees the source, so its recursion stays bounded.
+    if def.wgsl.len() > MAX_WGSL_BYTES {
+        return Err(format!(
+            "effect code is {} bytes, at most {MAX_WGSL_BYTES} allowed",
+            def.wgsl.len()
+        ));
+    }
+    let depth = nesting_depth(&def.wgsl);
+    if depth > MAX_NESTING {
+        return Err(format!(
+            "effect code nests brackets {depth} deep, at most {MAX_NESTING} allowed"
+        ));
+    }
+    on_big_stack(|| validate_inner(def))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::nesting_depth;
+
+    #[test]
+    fn nesting_depth_skips_comments_like_naga() {
+        assert_eq!(nesting_depth("fn f() { a[(1)]; }"), 3);
+        assert_eq!(nesting_depth("// ((((\n("), 1);
+        assert_eq!(nesting_depth("// ((((\u{2028}(("), 2);
+        assert_eq!(nesting_depth("/* ( /* ( */ ( */ ("), 1);
+        // `/**/` closes; the `*` after `/*` cannot also open a nested comment.
+        assert_eq!(nesting_depth("/**/ (("), 2);
+        assert_eq!(nesting_depth("/*/ ( */ ("), 1);
+        assert_eq!(nesting_depth("/* unterminated ((("), 0);
+        assert_eq!(nesting_depth("a / (b)"), 1);
+    }
 }

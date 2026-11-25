@@ -7,7 +7,7 @@ use adit_core::{
     CLIP_PARAMS, ClipSource, Command, Document, EffectDef, EffectKind, FLICKS_PER_SECOND, Id,
     Media, MediaSpec, ParamDef, Project, Rational, Sequence, Time, time_to_frame,
 };
-use adit_media::{AudioCodec, ExportSettings, Ffmpeg, MediaBackend, VideoCodec};
+use adit_media::{AudioCodec, ExportSettings, MediaBackend, VideoCodec};
 use adit_render::{RenderError, Renderer};
 use image::RgbaImage;
 use serde_json::{Value, json};
@@ -34,7 +34,6 @@ pub struct Inner {
     cv: Condvar,
     /// Created on first use (GPU setup is slow); preview rendering shares it.
     renderer: Mutex<Option<Renderer>>,
-    ffmpeg: OnceLock<R<Ffmpeg>>,
 }
 
 #[derive(Default)]
@@ -89,7 +88,6 @@ impl Inner {
             state: Mutex::new(State::default()),
             cv: Condvar::new(),
             renderer: Mutex::new(None),
-            ffmpeg: OnceLock::new(),
         }
     }
 }
@@ -317,7 +315,13 @@ fn write_atomic(path: &str, text: &str) -> R<()> {
         let _ = std::fs::remove_file(&tmp);
         format!("cannot write {path}: {e}")
     };
-    std::fs::write(&tmp, text).map_err(cleanup)?;
+    // H-13: flushed before the rename, so a crash cannot leave the new name on unwritten data.
+    std::fs::File::create(&tmp)
+        .and_then(|mut f| {
+            std::io::Write::write_all(&mut f, text.as_bytes())?;
+            f.sync_all()
+        })
+        .map_err(cleanup)?;
     std::fs::rename(&tmp, p).map_err(cleanup)
 }
 
@@ -489,18 +493,6 @@ fn media_import(i: &Arc<Inner>, a: A) -> R<ToolOutput> {
     ok(json!({ "media": media }))
 }
 
-fn ffmpeg(i: &Inner) -> R<&Ffmpeg> {
-    // The Pattern backend is a `dyn MediaBackend` with no detection, and ADIT_MEDIA=pattern is the
-    // documented switch for "no detection" (T-SILENCE).
-    if std::env::var("ADIT_MEDIA").is_ok_and(|v| v == "pattern") {
-        return Err("not available with ADIT_MEDIA=pattern".into());
-    }
-    i.ffmpeg
-        .get_or_init(|| Ffmpeg::new().map_err(|e| e.to_string()))
-        .as_ref()
-        .map_err(Clone::clone)
-}
-
 fn media_path(i: &Inner, a: A) -> R<(String, Rational)> {
     let id = a
         .opt_u64("media_id")?
@@ -526,7 +518,8 @@ fn detect_silence(i: &Arc<Inner>, a: A) -> R<ToolOutput> {
     let min = a
         .time("min_duration", Some(fps))?
         .unwrap_or(FLICKS_PER_SECOND * 2 / 5);
-    let r = ffmpeg(i)?
+    let r = i
+        .media
         .detect_silence(&path, noise, min)
         .map_err(|e| e.to_string())?;
     ok(
@@ -537,7 +530,8 @@ fn detect_silence(i: &Arc<Inner>, a: A) -> R<ToolOutput> {
 fn detect_scenes(i: &Arc<Inner>, a: A) -> R<ToolOutput> {
     let (path, _) = media_path(i, a)?;
     let threshold = a.opt_f64("threshold")?.unwrap_or(0.3);
-    let r = ffmpeg(i)?
+    let r = i
+        .media
         .detect_scenes(&path, threshold)
         .map_err(|e| e.to_string())?;
     ok(json!({ "cuts_s": r.into_iter().map(secs).collect::<Vec<_>>() }))
@@ -555,15 +549,17 @@ fn audio_levels(i: &Arc<Inner>, a: A) -> R<ToolOutput> {
     let s = snap(i, a)?;
     let seq = s.project.sequence(s.seq).ok_or("sequence vanished")?;
     let start = a.time("start", Some(s.fps))?.unwrap_or(0);
+    // H-5: past the sequence end is silence; clamping keeps the mix buffer bounded.
     let end = a
         .time("end", Some(s.fps))?
-        .unwrap_or_else(|| seq.duration());
+        .unwrap_or(Time::MAX)
+        .min(seq.duration());
     let buckets = a.opt_u64("buckets")?.unwrap_or(50);
     if !(1..=10_000).contains(&buckets) {
         return Err("`buckets` must be 1..10000".into());
     }
     if start < 0 || end <= start {
-        return Err("need 0 <= start < end".into());
+        return Err("need 0 <= start < end (end is clamped to the sequence end)".into());
     }
     let mix = adit_render::mix_audio(&s.project, s.seq, start, end - start, &*i.media)
         .map_err(|e| e.to_string())?;
@@ -721,6 +717,24 @@ fn check_effect(p: &Project, name: &str, kind: EffectKind) -> R<()> {
     }
 }
 
+/// H-9: every effect a clip or transition names still resolves with its kind (catches
+/// `remove_effect_def` of a used effect and a `define_effect` that changes the kind).
+fn check_effect_refs(p: &Project) -> R<()> {
+    for t in p.sequences.iter().flat_map(|s| &s.tracks) {
+        for c in &t.clips {
+            for e in &c.effects {
+                check_effect(p, &e.effect, EffectKind::Filter)
+                    .map_err(|m| format!("clip {} effect {}: {m}", c.id, e.id))?;
+            }
+        }
+        for tr in &t.transitions {
+            check_effect(p, &tr.effect, EffectKind::Transition)
+                .map_err(|m| format!("transition {}: {m}", tr.id))?;
+        }
+    }
+    Ok(())
+}
+
 /// Applies `c` to the scratch document after the checks the core does not do (T-EDIT), collecting
 /// the ids it creates. Earlier commands are visible to later checks, so define-then-use works.
 fn run_checked(d: &mut Document, c: &Command, out: &mut Vec<Id>) -> R<()> {
@@ -744,6 +758,10 @@ fn run_checked(d: &mut Document, c: &Command, out: &mut Vec<Id>) -> R<()> {
             effect: Some(effect),
             ..
         } => check_effect(d.project(), effect, EffectKind::Transition)?,
+        Command::SetClip {
+            audio_filter: Some(f),
+            ..
+        } => adit_media::check_audio_filter(f).map_err(|e| format!("audio_filter: {e}"))?,
         _ => {}
     }
     out.extend(d.apply(c.clone()).map_err(|e| e.to_string())?.created);
@@ -778,6 +796,7 @@ fn edit(i: &Arc<Inner>, a: A) -> R<ToolOutput> {
         created.push(ids);
         scratch = Document::new(scratch.project().clone()); // drop the scratch undo history
     }
+    check_effect_refs(scratch.project())?;
     let before = e.doc.undo_depth();
     e.doc
         .apply(Command::Batch { commands: parsed })
@@ -957,6 +976,15 @@ fn contact_sheet(i: &Arc<Inner>, a: A) -> R<ToolOutput> {
     let columns = columns.min(count) as u32;
     let rows = (count as u32).div_ceil(columns);
     let (cw, ch) = scale_to(seq.width, seq.height, cell);
+    // H-11: checked before any rendering. cw, ch <= 2048 and columns, rows <= 100: no overflow.
+    let pixels = u64::from(cw * columns) * u64::from(ch * rows);
+    if pixels > 64_000_000 {
+        return Err(format!(
+            "the sheet would be {}x{} = {pixels} pixels, at most 64000000; lower count or cell_size",
+            cw * columns,
+            ch * rows
+        ));
+    }
     let mut sheet = RgbaImage::new(cw * columns, ch * rows);
     let mut times = Vec::new();
     for k in 0..count {
@@ -976,6 +1004,26 @@ fn contact_sheet(i: &Arc<Inner>, a: A) -> R<ToolOutput> {
 
 // ---------------------------------------------------------------------------------------- export
 
+const MAX_RUNNING_JOBS: usize = 4;
+
+/// `p` for comparing file identity: canonical as far as it exists (the file, else its directory),
+/// case-folded on Windows.
+fn file_key(p: &str) -> std::path::PathBuf {
+    let p = Path::new(p);
+    let full = std::fs::canonicalize(p)
+        .or_else(|_| {
+            let dir = p.parent().filter(|d| !d.as_os_str().is_empty());
+            std::fs::canonicalize(dir.unwrap_or(Path::new(".")))
+                .map(|d| d.join(p.file_name().unwrap_or_default()))
+        })
+        .unwrap_or_else(|_| p.to_path_buf());
+    if cfg!(windows) {
+        full.to_string_lossy().to_lowercase().into()
+    } else {
+        full
+    }
+}
+
 fn export(i: &Arc<Inner>, a: A) -> R<ToolOutput> {
     let s = snap(i, a)?;
     let seq = s.project.sequence(s.seq).ok_or("sequence vanished")?;
@@ -985,6 +1033,19 @@ fn export(i: &Arc<Inner>, a: A) -> R<ToolOutput> {
     }
     if seq.duration() <= 0 {
         return Err("the sequence is empty: nothing to export".into());
+    }
+    // H-12: a successful export replaces the target, so it must not be a source file.
+    let key = file_key(path);
+    if let Some(m) = s
+        .project
+        .media
+        .iter()
+        .find(|m| file_key(&m.spec.path) == key)
+    {
+        return Err(format!(
+            "cannot export to {path}: it is the file of media {} ({})",
+            m.id, m.spec.name
+        ));
     }
     if let Some(dir) = Path::new(path)
         .parent()
@@ -1044,6 +1105,17 @@ fn export(i: &Arc<Inner>, a: A) -> R<ToolOutput> {
     );
     let job_id = {
         let mut st = lock(&i.state);
+        // H-13: each running export holds an encoder and a renderer.
+        let running = st
+            .jobs
+            .iter()
+            .filter(|(_, j)| j.state == JobState::Running)
+            .count();
+        if running >= MAX_RUNNING_JOBS {
+            return Err(format!(
+                "{running} exports are already running, at most {MAX_RUNNING_JOBS}; wait for one or cancel it"
+            ));
+        }
         let id = format!("j{}", st.jobs.len() + 1);
         st.jobs.push((
             id.clone(),

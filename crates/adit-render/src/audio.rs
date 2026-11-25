@@ -3,7 +3,7 @@
 use crate::RenderError;
 use crate::compose::{param, window};
 use adit_core::*;
-use adit_media::MediaBackend;
+use adit_media::{MediaBackend, MediaError};
 use std::f64::consts::FRAC_PI_2;
 
 const S: i128 = FLICKS_PER_SECOND as i128;
@@ -75,6 +75,7 @@ fn fetch(
     b: Time,
     sr: u32,
     media: &dyn MediaBackend,
+    depth: usize,
 ) -> Option<Vec<f32>> {
     match &clip.source {
         ClipSource::Media { media_id } => {
@@ -109,10 +110,14 @@ fn fetch(
             Some(v)
         }
         ClipSource::Sequence { sequence_id } => {
+            // validate() caps nesting (H-4); an unvalidated project is cut off here, silent.
+            if depth >= MAX_NEST_DEPTH {
+                return None;
+            }
             // A-6 shortcut: nested audio ignores speed and reverse.
             let nested = project.sequence(*sequence_id)?;
             let from = clip.source_in + (a - clip.start);
-            let v = mix_seq(project, nested, from, b - a, media);
+            let v = mix_seq(project, nested, from, b - a, media, depth + 1).ok()?;
             Some(resample(&v, nested.sample_rate, sr))
         }
         _ => None,
@@ -129,19 +134,33 @@ pub(crate) fn mix_audio(
     let seq = project
         .sequence(sequence_id)
         .ok_or(RenderError::SequenceNotFound(sequence_id))?;
-    Ok(mix_seq(project, seq, start, duration, media))
+    // H-5: the buffer is sized from `duration`.
+    if !(0..=MAX_TIME).contains(&duration) {
+        return Err(MediaError::Unsupported(format!(
+            "audio duration {duration} flicks outside 0..={MAX_TIME}"
+        ))
+        .into());
+    }
+    mix_seq(project, seq, start, duration, media, 1)
 }
 
+/// `depth` = nesting depth of `seq` (1 = the sequence asked for).
 fn mix_seq(
     project: &Project,
     seq: &Sequence,
     start: Time,
     duration: Time,
     media: &dyn MediaBackend,
-) -> Vec<f32> {
+    depth: usize,
+) -> Result<Vec<f32>, RenderError> {
     let sr = seq.sample_rate;
     let n = frame_count(duration, sr);
-    let mut out = vec![0.0f32; 2 * n];
+    // Fallible: MAX_TIME at a high sample rate is still far more than any machine has.
+    let mut out = Vec::new();
+    n.checked_mul(2)
+        .and_then(|len| out.try_reserve_exact(len).ok())
+        .ok_or_else(|| MediaError::Unsupported(format!("cannot allocate {n} audio frames")))?;
+    out.resize(2 * n, 0.0f32);
     let end = start.saturating_add(duration.max(0));
     let audio = || seq.tracks.iter().filter(|t| t.kind == TrackKind::Audio);
     let solo = audio().any(|t| t.solo);
@@ -172,7 +191,7 @@ fn mix_seq(
                 continue;
             }
             let (a, b) = (start + time_of(first, sr), start + time_of(last, sr));
-            let Some(src) = fetch(project, clip, a, b, sr, media) else {
+            let Some(src) = fetch(project, clip, a, b, sr, media, depth) else {
                 continue;
             };
             for k in 0..last - first {
@@ -204,7 +223,7 @@ fn mix_seq(
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// Linear resampling of interleaved stereo.

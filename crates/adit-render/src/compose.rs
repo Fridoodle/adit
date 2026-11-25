@@ -270,15 +270,25 @@ impl Renderer {
                     .fill(enc, seq.width, seq.height, color.map(f64::from))?
             }
             ClipSource::Text { text } => {
+                // Before the CPU buffer, so an oversized sequence is an error, not an allocation.
+                self.gpu.check_size(seq.width, seq.height)?;
                 let rgba = self.fonts.render(text, seq.width, seq.height);
                 self.gpu.upload(&rgba, seq.width, seq.height)?
             }
             ClipSource::Sequence { sequence_id } => {
+                // validate() caps nesting (H-4), but an unvalidated project must not recurse
+                // without bound.
+                if self.nest + 1 >= MAX_NEST_DEPTH {
+                    return Ok(None);
+                }
                 let nested = project
                     .sequence(*sequence_id)
                     .ok_or(RenderError::SequenceNotFound(*sequence_id))?;
                 let t = clip.source_time(time);
-                self.render_seq(enc, project, nested, t, media, [0.0; 4])?
+                self.nest += 1;
+                let r = self.render_seq(enc, project, nested, t, media, [0.0; 4]);
+                self.nest -= 1;
+                r?
             }
             // shortcut: an adjustment clip as a transition side draws nothing.
             ClipSource::Adjustment => return Ok(None),

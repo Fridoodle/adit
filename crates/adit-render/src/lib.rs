@@ -38,6 +38,8 @@ pub struct Renderer {
     fonts: text::Fonts,
     /// Effect sources that passed `validate_effect`.
     checked: HashSet<String>,
+    /// Sequences nested above the one being rendered (0 = top level); bounds recursion.
+    nest: usize,
 }
 
 impl Renderer {
@@ -48,6 +50,7 @@ impl Renderer {
             builtins: builtins::builtin_effects(),
             fonts: Default::default(),
             checked: HashSet::new(),
+            nest: 0,
         })
     }
 
@@ -80,6 +83,8 @@ impl Renderer {
         out: (u32, u32),
     ) -> Result<Vec<u8>, RenderError> {
         let scope = self.gpu.scope();
+        // A panic caught by a caller may have left it raised.
+        self.nest = 0;
         let r = (|| {
             let mut enc = self.gpu.encoder();
             let mut tex =

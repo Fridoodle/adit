@@ -104,7 +104,7 @@ impl Gpu {
         Scope { val, oom }
     }
 
-    fn check_size(&self, w: u32, h: u32) -> Result<(), RenderError> {
+    pub fn check_size(&self, w: u32, h: u32) -> Result<(), RenderError> {
         if w == 0 || h == 0 || w > self.max_dim || h > self.max_dim {
             return Err(gpu_err(format!(
                 "texture size {w}x{h} outside 1..={}",
@@ -160,7 +160,10 @@ impl Gpu {
 
     fn pipeline(&mut self, source: &str) -> Result<&wgpu::RenderPipeline, RenderError> {
         if !self.pipelines.contains_key(source) {
-            let built = self.build_pipeline(source);
+            // wgpu parses the WGSL and compiles it for the backend recursively on the calling
+            // thread. The build's error scope lives on that thread too (scopes are thread-local).
+            let gpu = &*self;
+            let built = crate::effects::on_big_stack(|| gpu.build_pipeline(source)).and_then(|r| r);
             self.pipelines.insert(source.to_string(), built);
         }
         match &self.pipelines[source] {

@@ -83,7 +83,7 @@ impl Fonts {
     /// `w`x`h` straight-alpha RGBA: the text in `t.color`, its layout box centred.
     /// No usable font → fully transparent (the frame still renders).
     pub fn render(&mut self, t: &TextSpec, w: u32, h: u32) -> Vec<u8> {
-        let mut img = vec![0u8; (w * h * 4) as usize];
+        let mut img = vec![0u8; w as usize * h as usize * 4];
         let Some(font) = self.get(&t.font, t.bold, t.italic) else {
             return img;
         };

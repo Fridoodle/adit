@@ -304,6 +304,10 @@ is an ordinary error.
   rejected); `|` is allowed inside args; the error text contains the rejected name. H-12 wins over
   X-2 when a file already existed at the target. H-13 "at once" = jobs in state `running`.
 
+  The bracket limit does not bound recursion from operator chains (`!!!!…x`, `1+1+…`); shader
+  parsing and pipeline creation therefore run on a thread with a 1 GiB reserved stack (measured need
+  in a debug build for a worst-case 64 KB chain: 256–512 MiB).
+
 Known limits, not fixed in this milestone: a user shader with a very long loop can stall the renderer;
 blocking tools and HTTP requests each take a thread without an upper bound; one idle ffmpeg reader per
 video file is kept alive.

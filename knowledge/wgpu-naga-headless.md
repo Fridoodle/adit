@@ -25,3 +25,5 @@ Concerns: `crates/adit-render/src/{gpu,effects,text}.rs`.
   `size * height_unscaled() / units_per_em()`. Fonts come from `%WINDIR%\Fonts` by file name.
 
 Verified: 2026-11-25
+
+- Bracket-depth limits do not bound naga recursion: operator chains (`!!!!...x`, `1+1+...`) within 64 KB need 256-512 MiB of stack in a debug build. Shader parsing and pipeline creation run on a 1 GiB-stack thread (`effects::on_big_stack`). wgpu error scopes are thread-local, so that thread pushes/pops its own.
