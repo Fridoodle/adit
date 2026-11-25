@@ -82,7 +82,7 @@ fn m_audio_1_mono_duplicated_to_both_channels() {
         let v = ff().audio(&p, 2 * S, S / 4, 48000, "").unwrap();
         assert_len(&v, 12000);
         assert_ramp(&v, 48000, 2.0, |t| t / 4.0, |t| t / 4.0);
-        for f in v.chunks_exact(2) {
+        for f in v.as_chunks::<2>().0 {
             assert!((f[0] - f[1]).abs() < 1e-6, "mono not duplicated: {f:?}");
         }
     })

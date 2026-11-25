@@ -48,11 +48,22 @@ fn v4_effects_run_in_order() {
 #[test]
 fn v4_disabled_effect_is_skipped() {
     let mut x = fx(16, 16, [0.25, 0.0, 0.0, 1.0], 0, S);
-    filter(&mut x.b, "green", "fn effect(uv: vec2f) -> vec4f { return vec4f(0.0, 1.0, 0.0, 1.0); }", &[]);
+    filter(
+        &mut x.b,
+        "green",
+        "fn effect(uv: vec2f) -> vec4f { return vec4f(0.0, 1.0, 0.0, 1.0); }",
+        &[],
+    );
     let e = x.b.effect(x.c, "green", &[]);
     x.b.effect_mut(x.c, e).enabled = false;
     let f = render(&x.b.p, x.s, 0, &Fake::new());
-    assert_px(&f, 8, 8, [64, 0, 0], "V-4 disabled effect skipped (.25 → 64)");
+    assert_px(
+        &f,
+        8,
+        8,
+        [64, 0, 0],
+        "V-4 disabled effect skipped (.25 → 64)",
+    );
 }
 
 #[test]
@@ -76,7 +87,13 @@ fn one(body: &str, params: &[(&str, f64)], w: u32, h: u32, color: [f32; 4]) -> a
 
 #[test]
 fn e1_uv_origin_top_left() {
-    let f = one("fn effect(uv: vec2f) -> vec4f { return vec4f(uv.x, uv.y, 0.0, 1.0); }", &[], 64, 64, WHITE);
+    let f = one(
+        "fn effect(uv: vec2f) -> vec4f { return vec4f(uv.x, uv.y, 0.0, 1.0); }",
+        &[],
+        64,
+        64,
+        WHITE,
+    );
     // Pixel centres: (0.5/64)*255 ≈ 2, (63.5/64)*255 ≈ 253, (32.5/64)*255 ≈ 129.5.
     assert_px(&f, 0, 0, [2, 2, 0], "E-1 uv at top-left");
     assert_px(&f, 63, 0, [253, 2, 0], "E-1 uv at top-right");
@@ -86,7 +103,13 @@ fn e1_uv_origin_top_left() {
 
 #[test]
 fn e1_src_is_transparent_outside_0_1() {
-    let f = one("fn effect(uv: vec2f) -> vec4f { return src(uv + vec2f(0.5, 0.0)); }", &[], 64, 64, WHITE);
+    let f = one(
+        "fn effect(uv: vec2f) -> vec4f { return src(uv + vec2f(0.5, 0.0)); }",
+        &[],
+        64,
+        64,
+        WHITE,
+    );
     assert_px(&f, 10, 32, [255, 255, 255], "E-1 src inside image");
     assert_px(&f, 28, 32, [255, 255, 255], "E-1 src inside image");
     assert_px(&f, 36, 32, [0, 0, 0], "E-1 src outside 0..1 is transparent");
@@ -96,7 +119,13 @@ fn e1_src_is_transparent_outside_0_1() {
 #[test]
 fn e1_output_is_straight_alpha() {
     // (1,0,0,0.5) straight over black → 0.5 → 128 (premultiplied reading would give 255).
-    let f = one("fn effect(uv: vec2f) -> vec4f { return vec4f(1.0, 0.0, 0.0, 0.5); }", &[], 16, 16, WHITE);
+    let f = one(
+        "fn effect(uv: vec2f) -> vec4f { return vec4f(1.0, 0.0, 0.0, 0.5); }",
+        &[],
+        16,
+        16,
+        WHITE,
+    );
     assert_px(&f, 8, 8, [128, 0, 0], "E-1 straight alpha output");
 }
 
@@ -124,7 +153,13 @@ fn e1_ctx_time_duration_progress_frame() {
     assert_px(&f, 8, 8, [64, 255, 64], "E-1 ctx.time/duration/progress");
     x.b.effect_mut(x.c, e).effect = "frame".into();
     let f = render(&x.b.p, x.s, 2 * S, &Fake::new());
-    assert_px(&f, 8, 8, [60, 0, 0], "E-1 ctx.frame = sequence frame 60 (not local 30)");
+    assert_px(
+        &f,
+        8,
+        8,
+        [60, 0, 0],
+        "E-1 ctx.frame = sequence frame 60 (not local 30)",
+    );
 }
 
 #[test]
@@ -143,7 +178,13 @@ fn e1_ctx_size_is_image_size() {
     b.effect(c, "e", &[]);
     let fake = Fake::images(vec![("img", solid_frame(40, 20, [255, 255, 255, 255]))]);
     let f = render(&b.p, s, 0, &fake);
-    assert_px(&f, 32, 32, [40, 20, 0], "E-1 ctx.size of a 40x20 media image");
+    assert_px(
+        &f,
+        32,
+        32,
+        [40, 20, 0],
+        "E-1 ctx.size of a 40x20 media image",
+    );
 }
 
 #[test]
@@ -153,7 +194,13 @@ fn e1_params_declared_in_order_and_overridden_by_instance() {
     filter(&mut x.b, "ab", body, &[("a", 0.2), ("b", 0.4)]);
     let e = x.b.effect(x.c, "ab", &[]);
     let f = render(&x.b.p, x.s, 0, &Fake::new());
-    assert_px(&f, 8, 8, [51, 102, 0], "E-1 p.a/.b defaults (.2→51, .4→102)");
+    assert_px(
+        &f,
+        8,
+        8,
+        [51, 102, 0],
+        "E-1 p.a/.b defaults (.2→51, .4→102)",
+    );
     x.b.effect_mut(x.c, e).params.insert("a".into(), param(0.6));
     let f = render(&x.b.p, x.s, 0, &Fake::new());
     assert_px(&f, 8, 8, [153, 102, 0], "E-1 instance value a=.6 → 153");
@@ -180,25 +227,38 @@ fn e1_helpers_and_constants_allowed() {
 #[test]
 fn e2_keyframed_param_evaluated_at_local_time() {
     let mut x = fx(16, 16, WHITE, S, 4 * S);
-    filter(&mut x.b, "lvl", "fn effect(uv: vec2f) -> vec4f { return vec4f(p.v, 0.0, 0.0, 1.0); }", &[("v", 0.0)]);
+    filter(
+        &mut x.b,
+        "lvl",
+        "fn effect(uv: vec2f) -> vec4f { return vec4f(p.v, 0.0, 0.0, 1.0); }",
+        &[("v", 0.0)],
+    );
     let e = x.b.effect(x.c, "lvl", &[]);
-    x.b.effect_mut(x.c, e)
-        .params
-        .insert("v".into(), keyed(&[(0, 0.0, Easing::Linear), (2 * S, 1.0, Easing::Linear)]));
+    x.b.effect_mut(x.c, e).params.insert(
+        "v".into(),
+        keyed(&[(0, 0.0, Easing::Linear), (2 * S, 1.0, Easing::Linear)]),
+    );
     // t = 2s → local 1s → .5 → 128 (sequence time 2s would give 1.0 → 255).
     let f = render(&x.b.p, x.s, 2 * S, &Fake::new());
     assert_px(&f, 8, 8, [128, 0, 0], "E-2 keyframes at local time");
     // EaseInOut at u = .25: 3u² - 2u³ = .1875 - .03125 = .15625 → 39.8 → 40.
-    x.b.effect_mut(x.c, e)
-        .params
-        .insert("v".into(), keyed(&[(0, 0.0, Easing::EaseInOut), (4 * S, 1.0, Easing::Linear)]));
+    x.b.effect_mut(x.c, e).params.insert(
+        "v".into(),
+        keyed(&[(0, 0.0, Easing::EaseInOut), (4 * S, 1.0, Easing::Linear)]),
+    );
     let f = render(&x.b.p, x.s, 2 * S, &Fake::new());
     assert_px(&f, 8, 8, [40, 0, 0], "E-2 EaseInOut keyframes");
 }
 
 #[test]
 fn e2_missing_param_takes_paramdef_default() {
-    let f = one("fn effect(uv: vec2f) -> vec4f { return vec4f(p.v, 0.0, 0.0, 1.0); }", &[("v", 0.6)], 16, 16, WHITE);
+    let f = one(
+        "fn effect(uv: vec2f) -> vec4f { return vec4f(p.v, 0.0, 0.0, 1.0); }",
+        &[("v", 0.6)],
+        16,
+        16,
+        WHITE,
+    );
     assert_px(&f, 8, 8, [153, 0, 0], "E-2 default .6 → 153");
 }
 
@@ -207,7 +267,12 @@ fn e2_missing_param_takes_paramdef_default() {
 #[test]
 fn e3_project_effect_shadows_builtin() {
     let mut x = fx(16, 16, RED, 0, S);
-    filter(&mut x.b, "invert", "fn effect(uv: vec2f) -> vec4f { return vec4f(0.0, 1.0, 0.0, 1.0); }", &[]);
+    filter(
+        &mut x.b,
+        "invert",
+        "fn effect(uv: vec2f) -> vec4f { return vec4f(0.0, 1.0, 0.0, 1.0); }",
+        &[],
+    );
     x.b.effect(x.c, "invert", &[]);
     // Project def → green; the built-in invert would give cyan (0,255,255).
     let f = render(&x.b.p, x.s, 0, &Fake::new());
@@ -224,7 +289,12 @@ fn e3_transition_kind_on_clip_is_unknown_effect() {
         "E-3 built-in transition on a clip"
     );
     let mut x = fx(16, 16, RED, 0, S);
-    x.b.def("my_tr", EffectKind::Transition, "fn transition(uv: vec2f) -> vec4f { return src_a(uv); }", &[]);
+    x.b.def(
+        "my_tr",
+        EffectKind::Transition,
+        "fn transition(uv: vec2f) -> vec4f { return src_a(uv); }",
+        &[],
+    );
     x.b.effect(x.c, "my_tr", &[]);
     assert_eq!(
         try_render(&x.b.p, x.s, 0, &Fake::new()),
@@ -236,7 +306,8 @@ fn e3_transition_kind_on_clip_is_unknown_effect() {
 // ------------------------------------------------------------------ E-4
 
 const OK_FILTER: &str = "fn effect(uv: vec2f) -> vec4f { return src(uv) * p.gain; }";
-const OK_TRANSITION: &str = "fn transition(uv: vec2f) -> vec4f { return mix(src_a(uv), src_b(uv), ctx.progress); }";
+const OK_TRANSITION: &str =
+    "fn transition(uv: vec2f) -> vec4f { return mix(src_a(uv), src_b(uv), ctx.progress); }";
 
 fn err(d: &EffectDef) -> String {
     match validate_effect(d) {
@@ -250,16 +321,30 @@ fn err(d: &EffectDef) -> String {
 
 #[test]
 fn e4_valid_definitions_pass() {
-    assert_eq!(validate_effect(&def("f", EffectKind::Filter, OK_FILTER, &[("gain", 1.0)])), Ok(()));
-    assert_eq!(validate_effect(&def("t", EffectKind::Transition, OK_TRANSITION, &[])), Ok(()));
+    assert_eq!(
+        validate_effect(&def("f", EffectKind::Filter, OK_FILTER, &[("gain", 1.0)])),
+        Ok(())
+    );
+    assert_eq!(
+        validate_effect(&def("t", EffectKind::Transition, OK_TRANSITION, &[])),
+        Ok(())
+    );
     let all_ctx = "fn effect(uv: vec2f) -> vec4f {
         return vec4f(ctx.size.x + ctx.time + ctx.duration + ctx.progress + ctx.frame, 0.0, 0.0, 1.0);
     }";
-    assert_eq!(validate_effect(&def("c", EffectKind::Filter, all_ctx, &[])), Ok(()));
+    assert_eq!(
+        validate_effect(&def("c", EffectKind::Filter, all_ctx, &[])),
+        Ok(())
+    );
     let params: Vec<(String, f64)> = (0..64).map(|i| (format!("p{i}"), 0.0)).collect();
     let refs: Vec<(&str, f64)> = params.iter().map(|(n, v)| (n.as_str(), *v)).collect();
     assert_eq!(
-        validate_effect(&def("many", EffectKind::Filter, OK_FILTER.replace("p.gain", "p.p63").as_str(), &refs)),
+        validate_effect(&def(
+            "many",
+            EffectKind::Filter,
+            OK_FILTER.replace("p.gain", "p.p63").as_str(),
+            &refs
+        )),
         Ok(()),
         "E-2 exactly 64 params is allowed"
     );
@@ -269,9 +354,18 @@ fn e4_valid_definitions_pass() {
 fn e4_rejects_bad_wgsl() {
     let cases = [
         ("syntax error", "fn effect(uv: vec2f) -> vec4f { return ; }"),
-        ("undefined name", "fn effect(uv: vec2f) -> vec4f { return nope(uv); }"),
-        ("type error", "fn effect(uv: vec2f) -> vec4f { return 1.0 + true; }"),
-        ("recursion", "fn effect(uv: vec2f) -> vec4f { return effect(uv); }"),
+        (
+            "undefined name",
+            "fn effect(uv: vec2f) -> vec4f { return nope(uv); }",
+        ),
+        (
+            "type error",
+            "fn effect(uv: vec2f) -> vec4f { return 1.0 + true; }",
+        ),
+        (
+            "recursion",
+            "fn effect(uv: vec2f) -> vec4f { return effect(uv); }",
+        ),
     ];
     for (what, wgsl) in cases {
         err(&def("x", EffectKind::Filter, wgsl, &[]));
@@ -281,11 +375,32 @@ fn e4_rejects_bad_wgsl() {
 
 #[test]
 fn e4_rejects_missing_or_wrong_entry_function() {
-    let m = err(&def("x", EffectKind::Filter, "fn helper(uv: vec2f) -> vec4f { return vec4f(1.0); }", &[]));
-    assert!(m.contains("effect"), "E-4 message names the missing `effect` fn: {m}");
-    let m = err(&def("x", EffectKind::Transition, "fn effect(uv: vec2f) -> vec4f { return vec4f(1.0); }", &[]));
-    assert!(m.contains("transition"), "E-4 message names the missing `transition` fn: {m}");
-    err(&def("x", EffectKind::Filter, "fn transition(uv: vec2f) -> vec4f { return src_a(uv); }", &[]));
+    let m = err(&def(
+        "x",
+        EffectKind::Filter,
+        "fn helper(uv: vec2f) -> vec4f { return vec4f(1.0); }",
+        &[],
+    ));
+    assert!(
+        m.contains("effect"),
+        "E-4 message names the missing `effect` fn: {m}"
+    );
+    let m = err(&def(
+        "x",
+        EffectKind::Transition,
+        "fn effect(uv: vec2f) -> vec4f { return vec4f(1.0); }",
+        &[],
+    ));
+    assert!(
+        m.contains("transition"),
+        "E-4 message names the missing `transition` fn: {m}"
+    );
+    err(&def(
+        "x",
+        EffectKind::Filter,
+        "fn transition(uv: vec2f) -> vec4f { return src_a(uv); }",
+        &[],
+    ));
     for wrong in [
         "fn effect(uv: vec2f) -> vec3f { return vec3f(1.0); }",
         "fn effect(uv: f32) -> vec4f { return vec4f(1.0); }",
@@ -324,21 +439,50 @@ fn e4_rejects_own_bindings_and_entry_points() {
 
 #[test]
 fn e4_rejects_bad_param_names() {
-    let m = err(&def("x", EffectKind::Filter, OK_FILTER, &[("gain", 1.0), ("gain", 2.0)]));
-    assert!(m.contains("gain"), "E-4 duplicate param message names it: {m}");
+    let m = err(&def(
+        "x",
+        EffectKind::Filter,
+        OK_FILTER,
+        &[("gain", 1.0), ("gain", 2.0)],
+    ));
+    assert!(
+        m.contains("gain"),
+        "E-4 duplicate param message names it: {m}"
+    );
     for bad in ["1abc", "a-b", "has space", "fn", "p.q"] {
-        let m = err(&def("x", EffectKind::Filter, OK_FILTER, &[("gain", 1.0), (bad, 0.0)]));
-        assert!(m.contains(bad), "E-4 invalid param name message names {bad:?}: {m}");
+        let m = err(&def(
+            "x",
+            EffectKind::Filter,
+            OK_FILTER,
+            &[("gain", 1.0), (bad, 0.0)],
+        ));
+        assert!(
+            m.contains(bad),
+            "E-4 invalid param name message names {bad:?}: {m}"
+        );
     }
-    err(&def("x", EffectKind::Filter, OK_FILTER, &[("gain", 1.0), ("", 0.0)]));
+    err(&def(
+        "x",
+        EffectKind::Filter,
+        OK_FILTER,
+        &[("gain", 1.0), ("", 0.0)],
+    ));
 }
 
 #[test]
 fn e4_rejects_more_than_64_params() {
     let params: Vec<(String, f64)> = (0..65).map(|i| (format!("p{i}"), 0.0)).collect();
     let refs: Vec<(&str, f64)> = params.iter().map(|(n, v)| (n.as_str(), *v)).collect();
-    let m = err(&def("x", EffectKind::Filter, "fn effect(uv: vec2f) -> vec4f { return src(uv); }", &refs));
-    assert!(m.contains("64") || m.contains("65"), "E-4 message mentions the limit: {m}");
+    let m = err(&def(
+        "x",
+        EffectKind::Filter,
+        "fn effect(uv: vec2f) -> vec4f { return src(uv); }",
+        &refs,
+    ));
+    assert!(
+        m.contains("64") || m.contains("65"),
+        "E-4 message mentions the limit: {m}"
+    );
 }
 
 #[test]
@@ -391,11 +535,19 @@ fn e4_validated_defs_render_without_shader_error() {
 #[test]
 fn e4_invalid_project_def_fails_render() {
     let mut x = fx(16, 16, WHITE, 0, S);
-    filter(&mut x.b, "broken", "fn effect(uv: vec2f) -> vec4f { return ; }", &[]);
+    filter(
+        &mut x.b,
+        "broken",
+        "fn effect(uv: vec2f) -> vec4f { return ; }",
+        &[],
+    );
     x.b.effect(x.c, "broken", &[]);
     let r = try_render(&x.b.p, x.s, 0, &Fake::new());
     assert!(
-        matches!(r, Err(RenderError::Shader(_)) | Err(RenderError::UnknownEffect(_))),
+        matches!(
+            r,
+            Err(RenderError::Shader(_)) | Err(RenderError::UnknownEffect(_))
+        ),
         "V-3/E-4 invalid effect → Err(Shader | UnknownEffect), got {r:?}"
     );
 }
@@ -413,7 +565,9 @@ fn e5_spec_example() {
     let f = render(&x.b.p, x.s, 0, &Fake::new());
     assert_px(&f, 8, 8, [0, 128, 255], "E-5 gain 1");
     // gain .5 → (0, .25, .5) → (0, 64, 128).
-    x.b.effect_mut(x.c, e).params.insert("gain".into(), param(0.5));
+    x.b.effect_mut(x.c, e)
+        .params
+        .insert("gain".into(), param(0.5));
     let f = render(&x.b.p, x.s, 0, &Fake::new());
     assert_px(&f, 8, 8, [0, 64, 128], "E-5 gain 0.5");
 }

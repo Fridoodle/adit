@@ -50,10 +50,22 @@ fn v1_nested_sequence_renders_on_transparent_canvas() {
     // Outer: over white → r = 0.5*1+0.5*1 = 1 → 255; g,b = 0.5*0+0.5*1 = 0.5 → 128.
     // (An opaque-black nested canvas would give (128,0,0).)
     let f = render(&b.p, outer, ms(500), &Fake::new());
-    assert_px(&f, 8, 8, [255, 128, 128], "V-1 nested half-transparent red over white");
+    assert_px(
+        &f,
+        8,
+        8,
+        [255, 128, 128],
+        "V-1 nested half-transparent red over white",
+    );
     // Empty nested sequence: fully transparent → white shows.
     let f = render(&b.p, outer, ms(1500), &Fake::new());
-    assert_px(&f, 8, 8, [255, 255, 255], "V-1 empty nested sequence is transparent");
+    assert_px(
+        &f,
+        8,
+        8,
+        [255, 255, 255],
+        "V-1 empty nested sequence is transparent",
+    );
 }
 
 // ------------------------------------------------------------------ V-2
@@ -79,7 +91,13 @@ fn v2_hidden_track_and_disabled_clip_skipped() {
     b.track_mut(t[1]).hidden = true;
     b.clip_mut(c).enabled = false;
     let f = render(&b.p, s, 0, &Fake::new());
-    assert_px(&f, 8, 8, [255, 0, 0], "V-2 hidden track + disabled clip skipped");
+    assert_px(
+        &f,
+        8,
+        8,
+        [255, 0, 0],
+        "V-2 hidden track + disabled clip skipped",
+    );
 }
 
 #[test]
@@ -209,7 +227,8 @@ fn v3_media_frame_requested_at_source_time() {
     let f = render(&b.p, s, ms(1500), &fake);
     assert_px(&f, 8, 8, [90, 0, 0], "V-3 media at source_time (frame 90)");
     assert!(
-        fake.video_calls().contains(&("t".to_string(), 2_116_800_000)),
+        fake.video_calls()
+            .contains(&("t".to_string(), 2_116_800_000)),
         "V-3 video_frame(path, 3s) expected, calls: {:?}",
         fake.video_calls()
     );
@@ -235,7 +254,13 @@ fn v3_unreadable_media_renders_transparent() {
     let m = b.media("missing.mp4", Some((16, 16)), false);
     b.media_clip(t[1], 0, S, m);
     let f = render(&b.p, s, 0, &Fake::new()); // every Fake call errors
-    assert_px(&f, 8, 8, [255, 0, 0], "V-3 unreadable media is transparent, frame still Ok");
+    assert_px(
+        &f,
+        8,
+        8,
+        [255, 0, 0],
+        "V-3 unreadable media is transparent, frame still Ok",
+    );
 }
 
 #[test]
@@ -279,7 +304,13 @@ fn v3_nested_sequence_at_source_time_and_own_size() {
 
 // ---- V-3 text (glyph shapes are font-dependent: checked for placement and colour only)
 
-fn text_seq(content: &str, size: f64, color: [f32; 4], align: TextAlign, bg: Option<[f32; 4]>) -> (Project, Id) {
+fn text_seq(
+    content: &str,
+    size: f64,
+    color: [f32; 4],
+    align: TextAlign,
+    bg: Option<[f32; 4]>,
+) -> (Project, Id) {
     let mut b = B::new();
     let s = b.seq(128, 64);
     let v1 = b.vtrack(s);
@@ -332,13 +363,29 @@ fn v3_text_is_drawn_centred_in_its_colour() {
     let f = render(&p, s, 0, &Fake::new());
     assert_size(&f, 128, 64);
     let l = lit(&f);
-    assert!(l.len() > 30, "V-3 text: 32px 'H' lights pixels, got {}", l.len());
+    assert!(
+        l.len() > 30,
+        "V-3 text: 32px 'H' lights pixels, got {}",
+        l.len()
+    );
     let (cx, cy) = centroid(&l);
-    assert!((cx - 64.0).abs() <= 4.0, "V-3 text centred horizontally, centroid x {cx}");
-    assert!((cy - 32.0).abs() <= 8.0, "V-3 text centred vertically, centroid y {cy}");
+    assert!(
+        (cx - 64.0).abs() <= 4.0,
+        "V-3 text centred horizontally, centroid x {cx}"
+    );
+    assert!(
+        (cy - 32.0).abs() <= 8.0,
+        "V-3 text centred vertically, centroid y {cy}"
+    );
     // Red text over black: green and blue stay 0 everywhere; some pixel is solid red.
-    assert!(f.rgba.chunks(4).all(|p| p[1] <= 2 && p[2] <= 2), "V-3 text colour is red only");
-    assert!(f.rgba.chunks(4).any(|p| p[0] >= 240), "V-3 text has fully covered pixels");
+    assert!(
+        f.rgba.chunks(4).all(|p| p[1] <= 2 && p[2] <= 2),
+        "V-3 text colour is red only"
+    );
+    assert!(
+        f.rgba.chunks(4).any(|p| p[0] >= 240),
+        "V-3 text has fully covered pixels"
+    );
     assert_px(&f, 0, 0, [0, 0, 0], "V-3 text corner empty");
 }
 
@@ -347,7 +394,13 @@ fn v3_text_background_is_transparent() {
     let (p, s) = text_seq("H", 32.0, WHITE, TextAlign::Center, Some(BLUE));
     let f = render(&p, s, 0, &Fake::new());
     for (x, y) in [(2, 2), (125, 2), (2, 61), (125, 61)] {
-        assert_px(&f, x, y, [0, 0, 255], "V-3 text image transparent outside glyphs");
+        assert_px(
+            &f,
+            x,
+            y,
+            [0, 0, 255],
+            "V-3 text image transparent outside glyphs",
+        );
     }
 }
 
@@ -358,7 +411,10 @@ fn v3_text_size_scales_glyphs() {
     let (p, s) = text_seq("H", 36.0, WHITE, TextAlign::Center, None);
     let big = lit(&render(&p, s, 0, &Fake::new())).len();
     assert!(small > 0, "V-3 12px text visible");
-    assert!(big > 3 * small, "V-3 36px text has ~9x the ink of 12px: {big} vs {small}");
+    assert!(
+        big > 3 * small,
+        "V-3 36px text has ~9x the ink of 12px: {big} vs {small}"
+    );
 }
 
 #[test]
@@ -375,7 +431,10 @@ fn v3_text_newline_breaks_lines() {
     // Two lines stay centred as a block: check via a symmetric two-line text.
     let (p, s) = text_seq("H\nH", 16.0, WHITE, TextAlign::Center, None);
     let (cx, cy) = centroid(&lit(&render(&p, s, 0, &Fake::new())));
-    assert!((cx - 64.0).abs() <= 4.0 && (cy - 32.0).abs() <= 8.0, "V-3 block centred: ({cx},{cy})");
+    assert!(
+        (cx - 64.0).abs() <= 4.0 && (cy - 32.0).abs() <= 8.0,
+        "V-3 block centred: ({cx},{cy})"
+    );
 }
 
 #[test]
@@ -389,17 +448,42 @@ fn v3_text_align_positions_lines_within_block() {
         let bot: Vec<_> = l.iter().copied().filter(|p| p.1 > mid).collect();
         let minx = |v: &[(u32, u32)]| v.iter().map(|p| p.0).min().unwrap() as f64;
         let maxx = |v: &[(u32, u32)]| v.iter().map(|p| p.0).max().unwrap() as f64;
-        (centroid(&top).0, centroid(&bot).0, minx(&top), minx(&bot), maxx(&top), maxx(&bot))
+        (
+            centroid(&top).0,
+            centroid(&bot).0,
+            minx(&top),
+            minx(&bot),
+            maxx(&top),
+            maxx(&bot),
+        )
     };
     let (t, bo, tmin, bmin, _, _) = lines(TextAlign::Left);
-    assert!((t - 64.0).abs() <= 4.0, "V-3 left-aligned block still centred: {t}");
-    assert!(bo < t - 8.0, "V-3 left: short line left of long line ({bo} vs {t})");
-    assert!((bmin - tmin).abs() <= 3.0, "V-3 left: left edges match ({bmin} vs {tmin})");
+    assert!(
+        (t - 64.0).abs() <= 4.0,
+        "V-3 left-aligned block still centred: {t}"
+    );
+    assert!(
+        bo < t - 8.0,
+        "V-3 left: short line left of long line ({bo} vs {t})"
+    );
+    assert!(
+        (bmin - tmin).abs() <= 3.0,
+        "V-3 left: left edges match ({bmin} vs {tmin})"
+    );
     let (t, bo, _, _, tmax, bmax) = lines(TextAlign::Right);
-    assert!(bo > t + 8.0, "V-3 right: short line right of long line ({bo} vs {t})");
-    assert!((bmax - tmax).abs() <= 3.0, "V-3 right: right edges match ({bmax} vs {tmax})");
+    assert!(
+        bo > t + 8.0,
+        "V-3 right: short line right of long line ({bo} vs {t})"
+    );
+    assert!(
+        (bmax - tmax).abs() <= 3.0,
+        "V-3 right: right edges match ({bmax} vs {tmax})"
+    );
     let (t, bo, _, _, _, _) = lines(TextAlign::Center);
-    assert!((bo - t).abs() <= 3.0, "V-3 center: lines share a centre ({bo} vs {t})");
+    assert!(
+        (bo - t).abs() <= 3.0,
+        "V-3 center: lines share a centre ({bo} vs {t})"
+    );
 }
 
 // ------------------------------------------------------------------ V-7
@@ -435,7 +519,7 @@ fn v7_every_blend_mode_opaque() {
     // d = (0.25, 0.5, 0.75) below, s = (0.75, 0.25, 0.5) on top, both opaque → out = B(d, s).
     let table: [(BlendMode, [u8; 3]); 8] = [
         (BlendMode::Normal, [191, 64, 128]), // s: .75→191.25, .25→63.75, .5→127.5
-        (BlendMode::Add, [255, 191, 255]), // min(1, 1.0 / .75 / 1.25)
+        (BlendMode::Add, [255, 191, 255]),   // min(1, 1.0 / .75 / 1.25)
         (BlendMode::Multiply, [48, 32, 96]), // .1875→47.8, .125→31.9, .375→95.6
         (BlendMode::Screen, [207, 159, 223]), // 1-.75*.25=.8125→207.2, 1-.5*.75=.625→159.4, 1-.25*.5=.875→223.1
         (BlendMode::Overlay, [96, 64, 191]), // d<.5: 2*.25*.75=.375→95.6; d>=.5: 1-2*.5*.75=.25; 1-2*.25*.5=.75
@@ -504,17 +588,31 @@ fn v7_general_formula_on_transparent_nested_canvas() {
 fn v7_opacity_keyframes_evaluated_at_local_time() {
     let (mut b, s, t) = small(1);
     let c = b.solid(t[0], S, 2 * S, WHITE);
-    b.keys(c, "opacity", &[(0, 0.0, Easing::Linear), (S, 1.0, Easing::Linear)]);
+    b.keys(
+        c,
+        "opacity",
+        &[(0, 0.0, Easing::Linear), (S, 1.0, Easing::Linear)],
+    );
     // t = 1.5s → local 0.5s → opacity 0.5 → 128 (sequence-time evaluation would give 255).
     let f = render(&b.p, s, ms(1500), &Fake::new());
-    assert_px(&f, 8, 8, [128, 128, 128], "V-7 opacity keyframe at local 0.5s");
+    assert_px(
+        &f,
+        8,
+        8,
+        [128, 128, 128],
+        "V-7 opacity keyframe at local 0.5s",
+    );
     // After the last keyframe: 1.0.
     let f = render(&b.p, s, ms(2500), &Fake::new());
     assert_px(&f, 8, 8, [255, 255, 255], "V-7 opacity after last keyframe");
 
     let (mut b, s, t) = small(1);
     let c = b.solid(t[0], S, 2 * S, WHITE);
-    b.keys(c, "opacity", &[(0, 0.0, Easing::EaseIn), (S, 1.0, Easing::Linear)]);
+    b.keys(
+        c,
+        "opacity",
+        &[(0, 0.0, Easing::EaseIn), (S, 1.0, Easing::Linear)],
+    );
     // EaseIn u = 0.5 → u² = 0.25 → 63.75 → 64.
     let f = render(&b.p, s, ms(1500), &Fake::new());
     assert_px(&f, 8, 8, [64, 64, 64], "V-7 opacity EaseIn at u=0.5");
@@ -532,8 +630,20 @@ fn v8_adjustment_runs_effects_on_canvas_below_only() {
     b.set(top, "crop_right", 0.5); // red only on x < 8
     let f = render(&b.p, s, 0, &Fake::new());
     // 0.25 * 2^1 = 0.5 → 128.
-    assert_px(&f, 12, 8, [128, 128, 128], "V-8 adjustment brightens canvas below");
-    assert_px(&f, 2, 8, [255, 0, 0], "V-8 layer above adjustment untouched");
+    assert_px(
+        &f,
+        12,
+        8,
+        [128, 128, 128],
+        "V-8 adjustment brightens canvas below",
+    );
+    assert_px(
+        &f,
+        2,
+        8,
+        [255, 0, 0],
+        "V-8 layer above adjustment untouched",
+    );
 }
 
 #[test]
@@ -542,7 +652,13 @@ fn v8_adjustment_includes_black_base_canvas() {
     let a = b.adjustment(t[0], 0, S);
     b.effect(a, "invert", &[]);
     let f = render(&b.p, s, 0, &Fake::new());
-    assert_px(&f, 8, 8, [255, 255, 255], "V-8 inverted opaque black canvas");
+    assert_px(
+        &f,
+        8,
+        8,
+        [255, 255, 255],
+        "V-8 inverted opaque black canvas",
+    );
 }
 
 #[test]
@@ -570,7 +686,13 @@ fn v8_adjustment_ignores_transform_crop_blend() {
     b.clip_mut(a).blend = BlendMode::Multiply; // would give 0.25*0.5 = 0.125 → 32
     let f = render(&b.p, s, 0, &Fake::new());
     for (x, y) in [(0, 0), (15, 15), (8, 8), (0, 15), (15, 0)] {
-        assert_px(&f, x, y, [128, 128, 128], "V-8 transform/crop/blend ignored");
+        assert_px(
+            &f,
+            x,
+            y,
+            [128, 128, 128],
+            "V-8 transform/crop/blend ignored",
+        );
     }
 }
 
@@ -597,7 +719,11 @@ fn busy_project() -> (Project, Id) {
     b.set(l, "opacity", 0.7);
     let n = b.seq_clip(v3, 0, 4 * S, inner);
     b.clip_mut(n).blend = BlendMode::Screen;
-    b.keys(n, "position_x", &[(0, -10.0, Easing::EaseInOut), (4 * S, 10.0, Easing::Linear)]);
+    b.keys(
+        n,
+        "position_x",
+        &[(0, -10.0, Easing::EaseInOut), (4 * S, 10.0, Easing::Linear)],
+    );
     (b.p, s)
 }
 

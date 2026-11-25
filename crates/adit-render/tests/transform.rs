@@ -68,14 +68,26 @@ fn v5_crop_is_fraction_of_image_not_canvas() {
     // 32x32 image at canvas [16,48); crop_left .25 of the image = 8 px → visible x in [24,48).
     // (Canvas-relative cropping would cut x < 16 instead and leave x=20 white.)
     let f = place(white(32, 32), &[("crop_left", 0.25)]);
-    check(&f, &[(26, 32), (45, 32)], &[(20, 32), (50, 32)], W, "V-5 image-relative crop");
+    check(
+        &f,
+        &[(26, 32), (45, 32)],
+        &[(20, 32), (50, 32)],
+        W,
+        "V-5 image-relative crop",
+    );
 }
 
 #[test]
 fn v5_crop_happens_in_image_space_before_transform() {
     // crop_left .5 of 32x32 → image columns [16,32) remain; moved +10 px → canvas [42,58).
     let f = place(white(32, 32), &[("crop_left", 0.5), ("position_x", 10.0)]);
-    check(&f, &[(44, 32), (56, 32)], &[(40, 32), (60, 32), (30, 32)], W, "V-5 crop then move");
+    check(
+        &f,
+        &[(44, 32), (56, 32)],
+        &[(40, 32), (60, 32), (30, 32)],
+        W,
+        "V-5 crop then move",
+    );
 }
 
 // ------------------------------------------------------------------ V-6
@@ -146,7 +158,13 @@ fn v6_rotation_90_of_non_square_image() {
 fn v6_anchor_alone_does_not_move_image() {
     // Anchor only sets the pivot of scale/rotation; with neither the image stays at [24,40).
     let f = place(green(16, 16), &[("anchor_x", 8.0), ("anchor_y", -8.0)]);
-    check(&f, &[(25, 25), (38, 38)], &[(22, 32), (41, 32), (32, 22), (32, 41)], G, "V-6 anchor only");
+    check(
+        &f,
+        &[(25, 25), (38, 38)],
+        &[(22, 32), (41, 32), (32, 22), (32, 41)],
+        G,
+        "V-6 anchor only",
+    );
 }
 
 #[test]
@@ -154,18 +172,36 @@ fn v6_anchor_is_pivot_for_scale() {
     // anchor_x 8 → pivot at image right-edge middle = canvas (40,32). scale_x 2 about x=40:
     // [24,40) → [8,40). (Scaling about the centre would give [16,48).)
     let f = place(green(16, 16), &[("anchor_x", 8.0), ("scale_x", 2.0)]);
-    check(&f, &[(10, 32), (38, 32), (24, 25)], &[(6, 32), (42, 32), (24, 22)], G, "V-6 anchor + scale");
+    check(
+        &f,
+        &[(10, 32), (38, 32), (24, 25)],
+        &[(6, 32), (42, 32), (24, 22)],
+        G,
+        "V-6 anchor + scale",
+    );
 }
 
 #[test]
 fn v6_anchor_is_pivot_for_rotation() {
     // anchor_x 8 → pivot (40,32); 180° → x [40,56), y [24,40).
     let f = place(green(16, 16), &[("anchor_x", 8.0), ("rotation", 180.0)]);
-    check(&f, &[(42, 26), (54, 38)], &[(37, 30), (58, 30), (30, 30)], G, "V-6 anchor + rot 180");
+    check(
+        &f,
+        &[(42, 26), (54, 38)],
+        &[(37, 30), (58, 30), (30, 30)],
+        G,
+        "V-6 anchor + rot 180",
+    );
     // anchor_y 8 → pivot at bottom middle (32,40). 90° cw maps offset (dx,dy) → (-dy,dx):
     // dx∈[-8,8], dy∈[-16,0] → x [32,48), y [32,48).
     let f = place(green(16, 16), &[("anchor_y", 8.0), ("rotation", 90.0)]);
-    check(&f, &[(34, 34), (46, 46)], &[(30, 40), (40, 30), (50, 40)], G, "V-6 anchor_y + rot 90");
+    check(
+        &f,
+        &[(34, 34), (46, 46)],
+        &[(30, 40), (40, 30), (50, 40)],
+        G,
+        "V-6 anchor_y + rot 90",
+    );
 }
 
 #[test]
@@ -175,10 +211,20 @@ fn v6_transform_params_evaluated_at_local_time() {
     let v = b.vtrack(s);
     let m = b.media("img", Some((16, 16)), false);
     let c = b.media_clip(v, S, 2 * S, m);
-    b.keys(c, "position_x", &[(0, 0.0, Easing::Linear), (2 * S, 20.0, Easing::Linear)]);
+    b.keys(
+        c,
+        "position_x",
+        &[(0, 0.0, Easing::Linear), (2 * S, 20.0, Easing::Linear)],
+    );
     // t = 2s → local 1s → position_x 10 → x [34,50). (Sequence time 2s would give 20 → [44,60).)
     let f = render(&b.p, s, 2 * S, &Fake::images(vec![("img", green(16, 16))]));
-    check(&f, &[(35, 32), (48, 32)], &[(32, 32), (52, 32)], G, "V-6 keyframed position");
+    check(
+        &f,
+        &[(35, 32), (48, 32)],
+        &[(32, 32), (52, 32)],
+        G,
+        "V-6 keyframed position",
+    );
 }
 
 #[test]
@@ -193,8 +239,20 @@ fn v6_outside_image_is_transparent_over_lower_track() {
     b.set(c, "rotation", 45.0);
     let f = render(&b.p, s, 0, &Fake::images(vec![("img", green(16, 16))]));
     assert_px(&f, 32, 32, [0, 255, 0], "V-6 rotated image centre");
-    assert_px(&f, 2, 2, [0, 0, 255], "V-6 outside transformed image is transparent");
+    assert_px(
+        &f,
+        2,
+        2,
+        [0, 0, 255],
+        "V-6 outside transformed image is transparent",
+    );
     // 45° square: pixel (24,24) (offset (-7.5,-7.5) from centre) has rotated coordinate
     // u = (dx+dy)/sqrt(2) = -10.6, beyond the half-side 8 → outside.
-    assert_px(&f, 24, 24, [0, 0, 255], "V-6 45° rotation leaves old corner empty");
+    assert_px(
+        &f,
+        24,
+        24,
+        [0, 0, 255],
+        "V-6 45° rotation leaves old corner empty",
+    );
 }

@@ -94,7 +94,7 @@ fn m_pat_audio_values_and_length() {
     // 1 s at 48000 -> 48000 frames, L = 0.5, R = 0.25 exactly.
     let v = p.audio("x", 0, S, 48000, "").unwrap();
     assert_eq!(v.len(), 2 * 48000);
-    for f in v.chunks_exact(2) {
+    for f in v.as_chunks::<2>().0 {
         assert_eq!(f, &[0.5f32, 0.25]);
     }
     // 1/3 s at 44100 -> 14700 frames; start and filter ignored.
@@ -102,7 +102,7 @@ fn m_pat_audio_values_and_length() {
         .audio("x", 7 * S, 235_200_000, 44100, "volume=0.1")
         .unwrap();
     assert_eq!(v.len(), 2 * 14700);
-    assert!(v.chunks_exact(2).all(|f| f == [0.5f32, 0.25]));
+    assert!(v.as_chunks::<2>().0.iter().all(|f| *f == [0.5f32, 0.25]));
     // 2.5 frames rounds half away from zero -> 3 frames.
     let v = p
         .audio("x", 0, 36_750, 48000, "not a valid filter [[")

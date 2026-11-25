@@ -22,12 +22,12 @@ fn solids(w: u32, effect: &str, params: &[(&str, f64)]) -> (B, Id, Id, Id, Id) {
 fn v9_cross_dissolve_spec_example() {
     let (b, s, ..) = solids(16, "cross_dissolve", &[]);
     let cases: [(Time, [u8; 3]); 6] = [
-        (2 * S, [128, 0, 128]),     // p = 0.5 → 127.5 each
-        (ms(1750), [191, 0, 64]),   // p = 0.25 → .75*255 = 191.25, .25*255 = 63.75
-        (ms(1400), [255, 0, 0]),    // before window
-        (ms(1500), [255, 0, 0]),    // p = 0
-        (ms(2250), [64, 0, 191]),   // p = 0.75
-        (ms(2500), [0, 0, 255]),    // window end is exclusive
+        (2 * S, [128, 0, 128]),   // p = 0.5 → 127.5 each
+        (ms(1750), [191, 0, 64]), // p = 0.25 → .75*255 = 191.25, .25*255 = 63.75
+        (ms(1400), [255, 0, 0]),  // before window
+        (ms(1500), [255, 0, 0]),  // p = 0
+        (ms(2250), [64, 0, 191]), // p = 0.75
+        (ms(2500), [0, 0, 255]),  // window end is exclusive
     ];
     for (t, rgb) in cases {
         let f = render(&b.p, s, t, &Fake::new());
@@ -124,10 +124,22 @@ fn v9_clips_sampled_outside_their_range() {
     });
     // t=2.25s (p=.75): A on the right, sampled past its end: source 2.25s → frame 67 (67.5 floored).
     let f = render(&b.p, s, ms(2250), &fake);
-    assert_px(&f, 60, 32, [67, 0, 0], "V-9 left clip continues past its end");
+    assert_px(
+        &f,
+        60,
+        32,
+        [67, 0, 0],
+        "V-9 left clip continues past its end",
+    );
     // t=1.75s (p=.25): B on the left, before its start: 2s + round(-0.25s) = 1.75s → frame 52.
     let f = render(&b.p, s, ms(1750), &fake);
-    assert_px(&f, 2, 32, [0, 52, 0], "V-9 right clip sampled before its start");
+    assert_px(
+        &f,
+        2,
+        32,
+        [0, 52, 0],
+        "V-9 right clip sampled before its start",
+    );
 }
 
 #[test]
@@ -141,8 +153,8 @@ fn v9_one_sided_left_fades_to_transparent() {
     b.transition(v2, Some(l), None, "cross_dissolve", S, &[]); // window [1s, 2s)
     let cases: [(Time, [u8; 3]); 4] = [
         (ms(900), [255, 0, 0]),
-        (S, [255, 0, 0]),             // p = 0
-        (ms(1750), [255, 191, 191]),  // p=.75: red at alpha .25 over white: g = .75 → 191
+        (S, [255, 0, 0]),            // p = 0
+        (ms(1750), [255, 191, 191]), // p=.75: red at alpha .25 over white: g = .75 → 191
         (2 * S, [255, 255, 255]),
     ];
     for (t, rgb) in cases {
@@ -244,8 +256,20 @@ fn e3_project_transition_shadows_builtin() {
         &[],
     );
     let f = render(&b.p, s, 2 * S, &Fake::new());
-    assert_px(&f, 2, 8, [0, 255, 0], "E-3 project 'wipe' wins over built-in");
-    assert_px(&f, 13, 8, [0, 255, 0], "E-3 project 'wipe' wins over built-in");
+    assert_px(
+        &f,
+        2,
+        8,
+        [0, 255, 0],
+        "E-3 project 'wipe' wins over built-in",
+    );
+    assert_px(
+        &f,
+        13,
+        8,
+        [0, 255, 0],
+        "E-3 project 'wipe' wins over built-in",
+    );
 }
 
 #[test]

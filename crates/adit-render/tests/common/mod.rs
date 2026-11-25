@@ -358,7 +358,12 @@ pub fn time_frame(t: Time, ch: usize, w: u32, h: u32) -> Frame {
 }
 
 pub fn px(f: &Frame, x: u32, y: u32) -> [u8; 4] {
-    assert!(x < f.width && y < f.height, "pixel ({x},{y}) outside {}x{}", f.width, f.height);
+    assert!(
+        x < f.width && y < f.height,
+        "pixel ({x},{y}) outside {}x{}",
+        f.width,
+        f.height
+    );
     let i = ((y * f.width + x) * 4) as usize;
     [f.rgba[i], f.rgba[i + 1], f.rgba[i + 2], f.rgba[i + 3]]
 }
@@ -424,10 +429,7 @@ impl Fake {
 
     pub fn with_audio(
         mut self,
-        f: impl Fn(&str, Time, Time, u32, &str) -> Result<Vec<f32>, MediaError>
-        + Send
-        + Sync
-        + 'static,
+        f: impl Fn(&str, Time, Time, u32, &str) -> Result<Vec<f32>, MediaError> + Send + Sync + 'static,
     ) -> Self {
         self.audio = Box::new(f);
         self
@@ -527,8 +529,10 @@ pub fn tempo_product(filter: &str) -> f64 {
 /// Constant L/R per path; length emulates atempo and is scaled by `len_factor`
 /// (to test cut/pad). Unknown path → NotFound.
 pub fn const_audio(levels: &[(&str, f32, f32)], len_factor: f64) -> Fake {
-    let levels: Vec<(String, f32, f32)> =
-        levels.iter().map(|(p, l, r)| (p.to_string(), *l, *r)).collect();
+    let levels: Vec<(String, f32, f32)> = levels
+        .iter()
+        .map(|(p, l, r)| (p.to_string(), *l, *r))
+        .collect();
     Fake::new().with_audio(move |path, _start, duration, sr, filter| {
         let &(_, l, r) = levels
             .iter()
@@ -555,7 +559,11 @@ pub fn ramp_audio(path: &'static str) -> Fake {
 }
 
 pub fn lr(buf: &[f32], frame: usize) -> (f32, f32) {
-    assert!(2 * frame + 1 < buf.len(), "frame {frame} beyond {} samples", buf.len());
+    assert!(
+        2 * frame + 1 < buf.len(),
+        "frame {frame} beyond {} samples",
+        buf.len()
+    );
     (buf[2 * frame], buf[2 * frame + 1])
 }
 

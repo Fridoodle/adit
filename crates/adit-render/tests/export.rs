@@ -6,7 +6,7 @@ use adit_core::*;
 use adit_media::{AudioCodec, ExportSettings, VideoCodec};
 use adit_render::{RenderError, export};
 use common::*;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -18,7 +18,7 @@ fn out_path(name: &str) -> PathBuf {
     p
 }
 
-fn settings(path: &PathBuf, w: u32, h: u32, fps: Rational, audio: AudioCodec) -> ExportSettings {
+fn settings(path: &Path, w: u32, h: u32, fps: Rational, audio: AudioCodec) -> ExportSettings {
     ExportSettings {
         path: path.to_string_lossy().into_owned(),
         width: w,
@@ -44,19 +44,34 @@ fn run_export(
 }
 
 fn tool(name: &str, args: &[&str]) -> String {
-    let out = Command::new(name).args(args).output().unwrap_or_else(|e| panic!("run {name}: {e}"));
-    assert!(out.status.success(), "{name} failed: {}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(name)
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| panic!("run {name}: {e}"));
+    assert!(
+        out.status.success(),
+        "{name} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
 /// (width, height, r_frame_rate, counted frames) of the first video stream.
-fn probe_video(path: &PathBuf) -> (u32, u32, String, u64) {
+fn probe_video(path: &Path) -> (u32, u32, String, u64) {
     let p = path.to_string_lossy();
     let out = tool(
         "ffprobe",
         &[
-            "-v", "error", "-select_streams", "v:0", "-count_frames", "-show_entries",
-            "stream=width,height,r_frame_rate,nb_read_frames", "-of", "default=noprint_wrappers=1", &p,
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-count_frames",
+            "-show_entries",
+            "stream=width,height,r_frame_rate,nb_read_frames",
+            "-of",
+            "default=noprint_wrappers=1",
+            &p,
         ],
     );
     let get = |k: &str| {
@@ -73,24 +88,46 @@ fn probe_video(path: &PathBuf) -> (u32, u32, String, u64) {
 }
 
 /// Sample rates of all audio streams (empty = no audio stream).
-fn probe_audio(path: &PathBuf) -> Vec<u32> {
+fn probe_audio(path: &Path) -> Vec<u32> {
     let p = path.to_string_lossy();
     let out = tool(
         "ffprobe",
-        &["-v", "error", "-select_streams", "a", "-show_entries", "stream=sample_rate", "-of", "csv=p=0", &p],
+        &[
+            "-v",
+            "error",
+            "-select_streams",
+            "a",
+            "-show_entries",
+            "stream=sample_rate",
+            "-of",
+            "csv=p=0",
+            &p,
+        ],
     );
-    out.lines().filter(|l| !l.trim().is_empty()).map(|l| l.trim().parse().unwrap()).collect()
+    out.lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.trim().parse().unwrap())
+        .collect()
 }
 
 /// All frames decoded to RGBA.
-fn decode(path: &PathBuf, w: u32, h: u32) -> Vec<Vec<u8>> {
+fn decode(path: &Path, w: u32, h: u32) -> Vec<Vec<u8>> {
     let p = path.to_string_lossy();
     let out = Command::new("ffmpeg")
-        .args(["-v", "error", "-i", &p, "-f", "rawvideo", "-pix_fmt", "rgba", "-"])
+        .args([
+            "-v", "error", "-i", &p, "-f", "rawvideo", "-pix_fmt", "rgba", "-",
+        ])
         .output()
         .expect("run ffmpeg");
-    assert!(out.status.success(), "ffmpeg decode failed: {}", String::from_utf8_lossy(&out.stderr));
-    out.stdout.chunks((w * h * 4) as usize).map(|c| c.to_vec()).collect()
+    assert!(
+        out.status.success(),
+        "ffmpeg decode failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    out.stdout
+        .chunks((w * h * 4) as usize)
+        .map(|c| c.to_vec())
+        .collect()
 }
 
 fn assert_rgb(frame: &[u8], w: u32, x: u32, y: u32, rgb: [u8; 3], tol: u8, what: &str) {
@@ -133,8 +170,15 @@ fn x1_frame_count_for_non_integer_duration() {
     let path = out_path("x1_count.mp4");
     let st = settings(&path, 64, 64, FPS30, AudioCodec::None);
     let mut total = 0;
-    run_export(&b.p, s, &st, &Fake::new(), &AtomicBool::new(false), &mut |_, n| total = n)
-        .expect("export");
+    run_export(
+        &b.p,
+        s,
+        &st,
+        &Fake::new(),
+        &AtomicBool::new(false),
+        &mut |_, n| total = n,
+    )
+    .expect("export");
     assert_eq!(total, 16, "X-1 N = 16");
     let (w, h, _, n) = probe_video(&path);
     assert_eq!((w, h, n), (64, 64, 16), "X-1 file has 16 frames of 64x64");
@@ -148,13 +192,28 @@ fn x1_scaled_retimed_with_resampled_audio() {
     let mut st = settings(&path, 32, 32, Rational { num: 10, den: 1 }, AudioCodec::Aac);
     st.sample_rate = 44_100;
     let mut total = 0;
-    run_export(&p, s, &st, &audio_fake(), &AtomicBool::new(false), &mut |_, n| total = n)
-        .expect("export");
+    run_export(
+        &p,
+        s,
+        &st,
+        &audio_fake(),
+        &AtomicBool::new(false),
+        &mut |_, n| total = n,
+    )
+    .expect("export");
     // 10 fps over 1 s: n * 70_560_000 < S → n = 0..9 → 10 frames.
     assert_eq!(total, 10, "X-1 N at export fps");
     let (w, h, rate, n) = probe_video(&path);
-    assert_eq!((w, h, rate.as_str(), n), (32, 32, "10/1", 10), "X-1 scaled to settings");
-    assert_eq!(probe_audio(&path), vec![44_100], "X-1 one audio stream at settings.sample_rate");
+    assert_eq!(
+        (w, h, rate.as_str(), n),
+        (32, 32, "10/1", 10),
+        "X-1 scaled to settings"
+    );
+    assert_eq!(
+        probe_audio(&path),
+        vec![44_100],
+        "X-1 one audio stream at settings.sample_rate"
+    );
     let frames = decode(&path, 32, 32);
     assert_eq!(frames.len(), 10);
     // Frame 4 = render at .4 s (red), frame 5 = .5 s (blue).
@@ -168,8 +227,20 @@ fn x1_audio_codec_none_means_no_audio_stream() {
     let (p, s) = red_blue(true);
     let path = out_path("x1_noaudio.mp4");
     let st = settings(&path, 64, 64, FPS30, AudioCodec::None);
-    run_export(&p, s, &st, &audio_fake(), &AtomicBool::new(false), &mut |_, _| {}).expect("export");
-    assert_eq!(probe_audio(&path), Vec::<u32>::new(), "X-1 AudioCodec::None → no audio stream");
+    run_export(
+        &p,
+        s,
+        &st,
+        &audio_fake(),
+        &AtomicBool::new(false),
+        &mut |_, _| {},
+    )
+    .expect("export");
+    assert_eq!(
+        probe_audio(&path),
+        Vec::<u32>::new(),
+        "X-1 AudioCodec::None → no audio stream"
+    );
     let _ = std::fs::remove_file(&path);
 }
 
@@ -184,8 +255,15 @@ fn x2_progress_after_every_frame() {
     let path = out_path("x2_progress.mp4");
     let st = settings(&path, 64, 64, FPS30, AudioCodec::None);
     let mut seen = vec![];
-    run_export(&b.p, s, &st, &Fake::new(), &AtomicBool::new(false), &mut |d, n| seen.push((d, n)))
-        .expect("export");
+    run_export(
+        &b.p,
+        s,
+        &st,
+        &Fake::new(),
+        &AtomicBool::new(false),
+        &mut |d, n| seen.push((d, n)),
+    )
+    .expect("export");
     let want: Vec<(u64, u64)> = (1..=10).map(|d| (d, 10)).collect();
     assert_eq!(seen, want, "X-2 progress (1,10) .. (10,10)");
     assert!(path.exists(), "X-2 file written");
@@ -210,7 +288,10 @@ fn x2_cancel_mid_export_removes_partial_file() {
     });
     assert_eq!(r, Err(RenderError::Cancelled), "X-2 cancel → Cancelled");
     let last = seen.last().map(|x| x.0).unwrap_or(0);
-    assert!((3..=4).contains(&last), "X-2 stops within one frame of cancel: last progress {last}");
+    assert!(
+        (3..=4).contains(&last),
+        "X-2 stops within one frame of cancel: last progress {last}"
+    );
     assert!(!path.exists(), "X-2 partial file removed");
 }
 
@@ -220,7 +301,14 @@ fn x2_cancel_before_start() {
     let path = out_path("x2_precancel.mp4");
     let st = settings(&path, 64, 64, FPS30, AudioCodec::None);
     let mut calls = 0;
-    let r = run_export(&p, s, &st, &Fake::new(), &AtomicBool::new(true), &mut |_, _| calls += 1);
+    let r = run_export(
+        &p,
+        s,
+        &st,
+        &Fake::new(),
+        &AtomicBool::new(true),
+        &mut |_, _| calls += 1,
+    );
     assert_eq!(r, Err(RenderError::Cancelled));
     assert!(calls <= 1, "X-2 stops within one frame");
     assert!(!path.exists(), "X-2 no file left");
@@ -236,7 +324,14 @@ fn x3_empty_sequence_is_error_without_file() {
     b.atrack(s);
     let path = out_path("x3_empty.mp4");
     let st = settings(&path, 64, 64, FPS30, AudioCodec::Aac);
-    let r = run_export(&b.p, s, &st, &audio_fake(), &AtomicBool::new(false), &mut |_, _| {});
+    let r = run_export(
+        &b.p,
+        s,
+        &st,
+        &audio_fake(),
+        &AtomicBool::new(false),
+        &mut |_, _| {},
+    );
     assert!(r.is_err(), "X-3 empty sequence → Err");
     assert!(!path.exists(), "X-3 no file left behind");
 }
@@ -246,7 +341,14 @@ fn x_missing_sequence_is_error() {
     let (p, _) = red_blue(false);
     let path = out_path("x_missing.mp4");
     let st = settings(&path, 64, 64, FPS30, AudioCodec::None);
-    let r = run_export(&p, 777, &st, &Fake::new(), &AtomicBool::new(false), &mut |_, _| {});
+    let r = run_export(
+        &p,
+        777,
+        &st,
+        &Fake::new(),
+        &AtomicBool::new(false),
+        &mut |_, _| {},
+    );
     assert_eq!(r, Err(RenderError::SequenceNotFound(777)));
     assert!(!path.exists());
 }
@@ -261,12 +363,23 @@ fn x4_end_to_end_red_blue_h264() {
     // Audio requested but the sequence has no audio tracks → no audio stream (X-1).
     let st = settings(&path, 64, 64, FPS30, AudioCodec::Aac);
     let mut seen = vec![];
-    run_export(&p, s, &st, &Fake::new(), &AtomicBool::new(false), &mut |d, n| seen.push((d, n)))
-        .expect("export");
+    run_export(
+        &p,
+        s,
+        &st,
+        &Fake::new(),
+        &AtomicBool::new(false),
+        &mut |d, n| seen.push((d, n)),
+    )
+    .expect("export");
     assert_eq!(seen.last(), Some(&(30, 30)), "X-2 ends with (N, N)");
     let (w, h, rate, n) = probe_video(&path);
     assert_eq!((w, h, rate.as_str(), n), (64, 64, "30/1", 30), "X-4 probe");
-    assert_eq!(probe_audio(&path), Vec::<u32>::new(), "X-1 no audio tracks → no audio stream");
+    assert_eq!(
+        probe_audio(&path),
+        Vec::<u32>::new(),
+        "X-1 no audio tracks → no audio stream"
+    );
     let frames = decode(&path, 64, 64);
     assert_eq!(frames.len(), 30);
     for (x, y) in [(32, 32), (5, 5), (60, 60)] {

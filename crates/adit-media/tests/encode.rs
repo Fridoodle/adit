@@ -170,7 +170,7 @@ fn m_enc_1_h264_odd_size_is_unsupported() {
 
 fn mean_abs_error(a: &[u8], c: [u8; 4]) -> [f64; 3] {
     let mut e = [0f64; 3];
-    for px in a.chunks_exact(4) {
+    for px in a.as_chunks::<4>().0 {
         for ch in 0..3 {
             e[ch] += (px[ch] as f64 - c[ch] as f64).abs();
         }
@@ -286,8 +286,8 @@ fn m_enc_3_drop_without_finish_kills_ffmpeg() {
         let p = d.file("out.mp4");
         let st = settings(&p, 64, 48, R30, VideoCodec::H264, AudioCodec::None);
         let mut e = Encoder::start(&st, None).unwrap();
-        for k in 0..3 {
-            e.write_frame(&flat_rgba(64, 48, COLOURS[k])).unwrap();
+        for colour in COLOURS.iter().take(3) {
+            e.write_frame(&flat_rgba(64, 48, *colour)).unwrap();
         }
         drop(e);
         // Once ffmpeg is gone the file is not held open (Windows refuses to delete open files).

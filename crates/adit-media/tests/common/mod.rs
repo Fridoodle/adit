@@ -415,7 +415,7 @@ pub fn gray_frame_number(f: &Frame) -> u32 {
     assert_eq!(f.rgba.len(), 64 * 64 * 4);
     let mut sum = 0u64;
     let (mut lo, mut hi) = (255u8, 0u8);
-    for px in f.rgba.chunks_exact(4) {
+    for px in f.rgba.as_chunks::<4>().0 {
         assert_eq!(
             px[3], 255,
             "opaque source must decode with a = 255 (M-FRAME-4)"

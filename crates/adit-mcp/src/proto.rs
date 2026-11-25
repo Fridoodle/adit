@@ -117,7 +117,9 @@ pub fn serve_stdio(session: Session) -> io::Result<()> {
         if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
-        let msg: Value = match serde_json::from_slice(&line) {
+        // .NET clients (PowerShell) put a UTF-8 BOM in front of their first line.
+        let text = line.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&line);
+        let msg: Value = match serde_json::from_slice(text) {
             Ok(m) => m,
             Err(e) => {
                 send(&err(&Value::Null, -32700, format!("parse error: {e}")));

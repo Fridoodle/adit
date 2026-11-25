@@ -242,7 +242,7 @@ fn m_frame_4_opaque_source_has_alpha_255() {
         let d = TempDir::new("opaque");
         let p = av_mp4(d.path(), "av.mp4");
         let f = ff().video_frame(&p, t30(3)).unwrap();
-        assert!(f.rgba.chunks_exact(4).all(|px| px[3] == 255));
+        assert!(f.rgba.as_chunks::<4>().0.iter().all(|px| px[3] == 255));
         // gray_frame_number also asserts a == 255 on an h264 source.
         let g = gray_h264(d.path(), "g.mp4", "30", 10);
         assert_eq!(gray_frame_number(&ff().video_frame(&g, t30(4)).unwrap()), 4);
