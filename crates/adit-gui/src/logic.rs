@@ -148,6 +148,12 @@ pub(crate) fn perform(action: Action, project: &Project, ui: &mut UiState) -> Ve
     let ph = ui.playhead;
     let dur = s.duration();
     match action {
+        Action::Copy
+        | Action::Cut
+        | Action::Paste
+        | Action::Unlink
+        | Action::SetLabel(_)
+        | Action::CloseGap { .. } => todo!("U-ED-1..5"),
         Action::SetTool(t) => ui.tool = t,
         Action::PlayPause => {
             if ui.playing {
@@ -418,6 +424,7 @@ pub(crate) fn perform(action: Action, project: &Project, ui: &mut UiState) -> Ve
                         reverse: None,
                         blend: None,
                         audio_filter: None,
+                        label: None,
                     })
                     .collect(),
             );
@@ -949,4 +956,35 @@ pub(crate) fn drag(d: Drag, project: &Project, ui: &mut UiState) -> Vec<Op> {
         _ => {}
     }
     vec![]
+}
+
+// ------------------------------------------------------------- U-ED-* (stubs, not implemented)
+
+pub(crate) fn copy(_: &Project, _: &UiState) -> Vec<crate::ClipboardItem> {
+    todo!("U-ED-1")
+}
+
+pub(crate) fn paste(_: &[crate::ClipboardItem], _: &Project, _: &mut UiState) -> Vec<Op> {
+    todo!("U-ED-2")
+}
+
+pub(crate) fn transition_at(_: &Project, _: Id, _: Id, _: Time, _: &str) -> Vec<Op> {
+    todo!("U-ED-6")
+}
+
+pub(crate) fn snap_delta(_: Time, _: &[Id], _: &Project, _: &UiState, _: Time) -> Time {
+    todo!("U-ED-7")
+}
+
+pub(crate) fn preview(_: crate::Drag, _: &Project, _: &UiState) -> Option<Project> {
+    todo!("U-ED-8")
+}
+
+pub(crate) fn context_menu(
+    _: crate::Hit,
+    _: bool,
+    _: &Project,
+    _: &mut UiState,
+) -> Vec<crate::MenuItem> {
+    todo!("U-ED-9")
 }

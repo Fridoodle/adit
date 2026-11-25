@@ -270,6 +270,7 @@ mod tests {
             audio_filter: "volume=2".into(),
             params: Default::default(),
             effects: vec![],
+            label: 0,
         };
         assert_eq!(
             filter_chain(&c),

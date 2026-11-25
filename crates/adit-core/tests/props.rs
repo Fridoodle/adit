@@ -274,6 +274,7 @@ fn to_cmd(p: &Project, w: &World, o: &Op) -> Command {
             reverse: Some(o.flag),
             blend: None,
             audio_filter: None,
+            label: None,
         },
         20 => Command::LinkClips {
             clip_ids: vec![c, c2],

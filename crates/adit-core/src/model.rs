@@ -127,6 +127,9 @@ pub struct Clip {
     /// Built-in properties (see `CLIP_PARAMS`). Absent = default.
     pub params: BTreeMap<String, Param>,
     pub effects: Vec<EffectInstance>,
+    /// Colour label, 0 = none, 1..=8 (SPEC C-LABEL-1).
+    #[serde(default)]
+    pub label: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

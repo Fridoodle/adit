@@ -120,6 +120,7 @@ fn g2_noop_pushes_nothing_and_keeps_redo() {
             reverse: None,
             blend: None,
             audio_filter: None,
+            label: None,
         },
     );
     assert_eq!(doc.project(), &before);
@@ -587,6 +588,7 @@ fn g9_command_serde_round_trip() {
             reverse: None,
             blend: Some(BlendMode::Difference),
             audio_filter: None,
+            label: None,
         },
     ];
     for c in cmds {

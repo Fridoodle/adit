@@ -194,6 +194,12 @@ impl App {
         self.tab().map(|t| &t.ui)
     }
 
+    /// Opens the AI import dialog for these files (GUI.md U-ED-19).
+    pub fn ai_import(&mut self, paths: Vec<String>) {
+        let _ = paths;
+        todo!("U-ED-19")
+    }
+
     /// Runs an action exactly as its key would (applies the resulting `Op`s through the session).
     pub fn run_action(&mut self, action: Action) {
         let Some(t) = self.tabs.get_mut(self.active) else {
@@ -396,6 +402,7 @@ impl App {
                 reverse: None,
                 blend: None,
                 audio_filter: Some(b.value),
+                label: None,
             },
             (TextField::Content, adit_core::ClipSource::Text { text })
                 if text.content != b.value =>
@@ -423,6 +430,7 @@ impl App {
     fn apply(&mut self, ops: Vec<Op>) {
         for op in ops {
             match op {
+                Op::Copy | Op::Paste => todo!("U-ED-10"),
                 Op::Edit(c) => {
                     self.edit(c);
                 }

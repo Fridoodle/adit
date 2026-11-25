@@ -211,6 +211,7 @@ pub fn mk_clip(id: Id, start: Time, duration: Time) -> Clip {
         audio_filter: String::new(),
         params: BTreeMap::new(),
         effects: Vec::new(),
+        label: 0,
     }
 }
 

@@ -102,6 +102,7 @@ pub fn mk_clip(id: Id, source: ClipSource, start: Time, duration: Time, source_i
         audio_filter: String::new(),
         params: BTreeMap::new(),
         effects: Vec::new(),
+        label: 0,
     }
 }
 

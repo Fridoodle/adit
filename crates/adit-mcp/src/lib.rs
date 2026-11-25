@@ -41,6 +41,12 @@ impl Session {
         }
     }
 
+    /// With an effect library directory (MCP_TOOLS.md T-LIB-1).
+    pub fn with_library(media: Arc<dyn MediaBackend>, dir: std::path::PathBuf) -> Self {
+        let _ = dir; // stub: T-LIB not implemented yet
+        Self::new(media)
+    }
+
     /// Runs one tool by name with JSON arguments; exactly what the MCP server does per call.
     /// `Err` = the message of an `isError` tool result.
     pub fn call(&self, tool: &str, args: Value) -> Result<ToolOutput, String> {
@@ -120,6 +126,24 @@ impl Session {
         time: adit_core::Time,
     ) -> Result<Arc<adit_media::Frame>, String> {
         tools::source_frame(&self.inner, path, time)
+    }
+
+    /// Audio peaks of a media file, 50 per second (GUI.md S-4).
+    pub fn waveform(&self, path: &str) -> Result<Arc<Vec<f32>>, String> {
+        let _ = path;
+        Err("not implemented".into()) // stub: S-4
+    }
+
+    /// `render` scaled down by `divisor` (1, 2 or 4) (GUI.md S-5).
+    pub fn render_scaled(
+        &self,
+        project: &adit_core::Project,
+        sequence_id: adit_core::Id,
+        time: adit_core::Time,
+        divisor: u32,
+    ) -> Result<adit_media::Frame, String> {
+        let _ = (project, sequence_id, time, divisor);
+        Err("not implemented".into()) // stub: S-5
     }
 
     /// Attaches (or with `None` detaches) the window the `ui_*` tools talk to.

@@ -2074,6 +2074,7 @@ fn c_set_1_set_clip_fields() {
             reverse: None,
             blend: Some(BlendMode::Screen),
             audio_filter: None,
+            label: None,
         },
     );
     let cl = clip(doc.project(), c);
@@ -2091,6 +2092,7 @@ fn c_set_1_set_clip_fields() {
             reverse: Some(true),
             blend: None,
             audio_filter: Some("volume=0.5".into()),
+            label: None,
         },
     );
     let cl = clip(doc.project(), c);
@@ -2113,7 +2115,7 @@ fn c_set_1_errors() {
     let mut doc = fx.doc();
     assert_err!(
         &mut doc,
-        Command::SetClip { clip_id: c, name: Some("x".into()), enabled: None, reverse: None, blend: None, audio_filter: None },
+        Command::SetClip { clip_id: c, name: Some("x".into()), enabled: None, reverse: None, blend: None, audio_filter: None, label: None },
         Error::TrackLocked { track_id } if track_id == v2
     );
     assert_err!(
@@ -2124,7 +2126,8 @@ fn c_set_1_errors() {
             enabled: None,
             reverse: None,
             blend: None,
-            audio_filter: None
+            audio_filter: None,
+            label: None,
         },
         Error::NotFound { id: 999, .. }
     );

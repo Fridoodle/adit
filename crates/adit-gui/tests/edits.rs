@@ -1060,6 +1060,7 @@ fn set_enabled(clip_id: Id, enabled: bool) -> Command {
         reverse: None,
         blend: None,
         audio_filter: None,
+        label: None,
     }
 }
 

@@ -1208,6 +1208,7 @@ fn set_clip(clip_id: Id, f: impl FnOnce(&mut Command)) -> Command {
         reverse: None,
         blend: None,
         audio_filter: None,
+        label: None,
     };
     f(&mut c);
     c

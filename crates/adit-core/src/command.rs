@@ -1,7 +1,8 @@
 //! Every edit there is. Semantics: docs/SPEC.md, section "Commands".
 
 use crate::{
-    BlendMode, ClipSource, Easing, EffectDef, Id, MediaSpec, Rational, TextSpec, Time, TrackKind,
+    BlendMode, Clip, ClipSource, Easing, EffectDef, Id, MediaSpec, Rational, TextSpec, Time,
+    TrackKind,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -45,6 +46,13 @@ pub struct ParamTarget {
     #[serde(default)]
     pub effect_id: Option<Id>,
     pub name: String,
+}
+
+/// One clip to paste: `clip.start` is where the copy goes, `clip.id` is ignored.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PasteItem {
+    pub track_id: Id,
+    pub clip: Clip,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -246,6 +254,14 @@ pub enum Command {
         blend: Option<BlendMode>,
         #[serde(default)]
         audio_filter: Option<String>,
+        #[serde(default)]
+        label: Option<u8>,
+    },
+    /// Adds copies of whole clips (SPEC C-PASTE-*).
+    PasteClips {
+        items: Vec<PasteItem>,
+        #[serde(default)]
+        mode: PlaceMode,
     },
     SetText {
         clip_id: Id,

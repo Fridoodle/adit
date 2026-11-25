@@ -510,6 +510,7 @@ fn new_clip(
         audio_filter: String::new(),
         params: BTreeMap::new(),
         effects: Vec::new(),
+        label: 0,
     }
 }
 
@@ -1247,6 +1248,7 @@ fn run(p: &mut Project, cmd: Command, out: &mut Vec<Id>) -> R {
                 shift(p, si, old_end, d)?;
             }
         }
+        PasteClips { .. } => todo!("C-PASTE-1"),
         SetClip {
             clip_id,
             name,
@@ -1254,6 +1256,7 @@ fn run(p: &mut Project, cmd: Command, out: &mut Vec<Id>) -> R {
             reverse,
             blend,
             audio_filter,
+            label: _, // stub: C-LABEL-1 not implemented yet
         } => {
             let c = clip_mut(p, clip_id)?;
             if let Some(x) = name {

@@ -189,6 +189,7 @@ impl B {
             audio_filter: String::new(),
             params: BTreeMap::new(),
             effects: vec![],
+            label: 0,
         });
         t.clips.sort_by_key(|c| c.start);
         id
