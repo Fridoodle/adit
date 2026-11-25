@@ -4,3 +4,4 @@ One line per note: `- [Title](file.md) — one-line hook`. Read this first; open
 Format and rules for notes are in the "Knowledge base" section of `/CLAUDE.md`.
 
 <!-- entries below -->
+- [ffmpeg subprocess gotchas](ffmpeg-subprocess-gotchas.md) — exact-frame seek recipe, mono upmix, autorotate, path prefix
