@@ -177,6 +177,18 @@ Effects a client defines are kept for every later project, so adit learns new lo
   one-off, and what the three request scopes mean (for `app`: change the source in `source_dir`,
   rebuild, and tell the user to restart). The text contains the words `library` and `source_dir`.
 
+- **T-LIB-6 Clarifications.** A `define_effect` whose name is outside the T-LIB-2 pattern works in
+  the project as before; it is only not saved. A `define_effect` inserted by T-LIB-4 is not listed
+  in `library` and does not rewrite the file. Missing parent directories are created too. In
+  T-LIB-3 only files named `<name>.json` that parse as an `EffectDef` with that same `name`, and
+  whose name is not a built-in's, count; they are listed in name order. A library effect that
+  fails `validate_effect` is listed, and using it fails the `edit` as any bad `define_effect` does.
+  T-LIB-5: the text also contains `scope`, `"edit"`, `"app"`, `"import"`, `rebuild`, `restart` and
+  `parameter`. T-REQ-4: `project_id` is required for every scope; `paths` is accepted with any
+  scope; a non-string `scope` or `paths` entry → error. S-4 (GUI.md): the sample rate used is the
+  implementation's choice and an `Err` is not cached. S-5: scaling is the renderer's bilinear
+  scale, the one export uses (SPEC X-1).
+
 ## Library surface (`adit_mcp`)
 
 ```rust
