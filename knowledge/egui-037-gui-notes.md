@@ -28,3 +28,23 @@ Concerns: `crates/adit-gui/src/app.rs`, `crates/adit-gui/src/app/*.rs`, `crates/
 Verified: 2026-11-25
 
 - Boot freeze (2026-11-25): release build of `adit gui` went Not Responding at start on the Vulkan backend (wgpu's default pick here); DX12 and GL were fine, debug builds were fine. The window's device and the renderer's device were being created at the same time on two threads. Fix: `warm_renderer` in `app.rs` creates the session renderer before `eframe::run_native`. The exact lock inside the driver was not identified (no debugger on this machine); evidence is backend-specific + fixed by ordering. Quick check: `WGPU_BACKEND=vulkan|dx12 adit gui` and `(Get-Process adit).Responding`. Always test the release binary, not only debug.
+
+Editing-comfort window work (U-ED-10..21), verified 2026-11-25:
+- `egui::WidgetType` is deprecated: use `egui::Role`. A painter-drawn button (tool bar icons) =
+  `allocate_exact_size(.., Sense::click())` + `resp.widget_info(|| WidgetInfo::selected(Role::Button,
+  true, on, name))`: kittest finds it by `name` and sees `toggled`. `Button::selectable` and
+  `checkbox` also report `toggled`. A `Role::Label` widget's text goes to accesskit *value*, not label.
+- kittest `click()` lands at the node's rect even when a `ScrollArea` has it out of view, so it hits
+  nothing. Rows a test must click have to be on screen (library effects are listed first for this).
+- `Response::context_menu` + `ui.menu_button(..)` inside it gives submenus that open on click in
+  kittest (closing after a choice is egui default, not checked by a test).
+- `perform(Cut)` empties the selection before its `Op::Copy` runs, so `App::run_action` takes
+  `copy(..)` before calling `perform`.
+- `worker::Worker` keeps only the newest request: when one worker serves many keys (waveforms),
+  every request names all keys still missing.
+- Dropped files: `ctx.input(|i| i.raw.dropped_files)` (`DroppedFile::path()`), one frame only.
+- Wand on panels: decide on raw pointer press/release against panel rects from `Panel::show(..)
+  .response.rect`; skip frames that started with a dialog open, or the click on the dialog's `Send`
+  reopens the prompt.
+
+Verified: 2026-11-25

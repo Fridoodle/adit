@@ -9,21 +9,202 @@ use adit_core::{
 use eframe::egui::{self, Color32, RichText};
 use serde_json::json;
 
-const TOOLS: &[(Tool, &str, &str)] = &[
-    (Tool::Select, "Sel", "Selection (V)"),
-    (Tool::TrackSelect, "Trk", "Track Select (A)"),
-    (Tool::Ripple, "Rip", "Ripple Edit (B)"),
-    (Tool::Roll, "Rol", "Rolling Edit (N)"),
-    (Tool::RateStretch, "Rate", "Rate Stretch (R)"),
-    (Tool::Razor, "Raz", "Razor (C)"),
-    (Tool::Slip, "Slip", "Slip (Y)"),
-    (Tool::Slide, "Sld", "Slide (U)"),
-    (Tool::Pen, "Pen", "Pen (P)"),
-    (Tool::Hand, "Hand", "Hand (H)"),
-    (Tool::Zoom, "Zoom", "Zoom (Z)"),
-    (Tool::Type, "Type", "Type (T)"),
-    (Tool::Wand, "Wand", "Magic Wand (Shift+W)"),
+/// Tool bar: tool, name (the accessible label), key, what it does (U-ED-11).
+const TOOLS: &[(Tool, &str, &str, &str)] = &[
+    (
+        Tool::Select,
+        "Selection",
+        "V",
+        "Selects, moves and trims clips.",
+    ),
+    (
+        Tool::TrackSelect,
+        "Track Select",
+        "A",
+        "Selects the clips from the click onwards on a track (Shift: all tracks).",
+    ),
+    (
+        Tool::Ripple,
+        "Ripple Edit",
+        "B",
+        "Trims a clip and moves the later clips with the edit.",
+    ),
+    (
+        Tool::Roll,
+        "Rolling Edit",
+        "N",
+        "Moves the cut between two clips, keeping their total length.",
+    ),
+    (
+        Tool::RateStretch,
+        "Rate Stretch",
+        "R",
+        "Changes a clip's speed by dragging its end.",
+    ),
+    (
+        Tool::Razor,
+        "Razor",
+        "C",
+        "Cuts a clip in two where you click (Shift: all tracks).",
+    ),
+    (
+        Tool::Slip,
+        "Slip",
+        "Y",
+        "Shifts the part of the source a clip shows, keeping its place.",
+    ),
+    (
+        Tool::Slide,
+        "Slide",
+        "U",
+        "Moves a clip between its neighbours, trimming them to fit.",
+    ),
+    (
+        Tool::Pen,
+        "Pen",
+        "P",
+        "Adds an opacity keyframe where you click.",
+    ),
+    (Tool::Hand, "Hand", "H", "Scrolls the timeline."),
+    (Tool::Zoom, "Zoom", "Z", "Zooms the timeline in (Alt: out)."),
+    (
+        Tool::Type,
+        "Type",
+        "T",
+        "Adds a title where you click in the Program monitor.",
+    ),
+    (
+        Tool::Wand,
+        "Magic Wand",
+        "Shift+W",
+        "Points at something and asks Claude to change it.",
+    ),
 ];
+
+type Strokes = &'static [&'static [[f32; 2]]];
+
+/// Tool icon as polylines in a unit square, y down (U-ED-11).
+fn icon(tool: Tool) -> Strokes {
+    match tool {
+        Tool::Select => &[&[
+            [0.3, 0.1],
+            [0.3, 0.85],
+            [0.47, 0.67],
+            [0.6, 0.95],
+            [0.7, 0.9],
+            [0.57, 0.62],
+            [0.8, 0.6],
+            [0.3, 0.1],
+        ]],
+        Tool::TrackSelect => &[
+            &[
+                [0.1, 0.1],
+                [0.1, 0.65],
+                [0.25, 0.5],
+                [0.5, 0.45],
+                [0.1, 0.1],
+            ],
+            &[
+                [0.5, 0.35],
+                [0.5, 0.9],
+                [0.65, 0.75],
+                [0.9, 0.7],
+                [0.5, 0.35],
+            ],
+        ],
+        Tool::Ripple => &[
+            &[[0.35, 0.1], [0.2, 0.1], [0.2, 0.9], [0.35, 0.9]],
+            &[[0.4, 0.5], [0.9, 0.5]],
+            &[[0.75, 0.35], [0.9, 0.5], [0.75, 0.65]],
+        ],
+        Tool::Roll => &[
+            &[[0.3, 0.1], [0.45, 0.1], [0.45, 0.9], [0.3, 0.9]],
+            &[[0.7, 0.1], [0.55, 0.1], [0.55, 0.9], [0.7, 0.9]],
+            &[[0.05, 0.5], [0.3, 0.5]],
+            &[[0.7, 0.5], [0.95, 0.5]],
+        ],
+        Tool::RateStretch => &[
+            &[[0.1, 0.15], [0.1, 0.85]],
+            &[[0.9, 0.15], [0.9, 0.85]],
+            &[[0.2, 0.5], [0.8, 0.5]],
+            &[[0.35, 0.35], [0.2, 0.5], [0.35, 0.65]],
+            &[[0.65, 0.35], [0.8, 0.5], [0.65, 0.65]],
+        ],
+        Tool::Razor => &[
+            &[[0.2, 0.6], [0.6, 0.2], [0.8, 0.4], [0.4, 0.8], [0.2, 0.6]],
+            &[[0.42, 0.5], [0.58, 0.42]],
+            &[[0.1, 0.9], [0.3, 0.7]],
+        ],
+        Tool::Slip => &[
+            &[
+                [0.1, 0.25],
+                [0.9, 0.25],
+                [0.9, 0.75],
+                [0.1, 0.75],
+                [0.1, 0.25],
+            ],
+            &[[0.25, 0.5], [0.75, 0.5]],
+            &[[0.35, 0.4], [0.25, 0.5], [0.35, 0.6]],
+            &[[0.65, 0.4], [0.75, 0.5], [0.65, 0.6]],
+        ],
+        Tool::Slide => &[
+            &[
+                [0.35, 0.25],
+                [0.65, 0.25],
+                [0.65, 0.75],
+                [0.35, 0.75],
+                [0.35, 0.25],
+            ],
+            &[[0.05, 0.5], [0.3, 0.5]],
+            &[[0.15, 0.4], [0.05, 0.5], [0.15, 0.6]],
+            &[[0.7, 0.5], [0.95, 0.5]],
+            &[[0.85, 0.4], [0.95, 0.5], [0.85, 0.6]],
+        ],
+        Tool::Pen => &[
+            &[
+                [0.5, 0.1],
+                [0.75, 0.55],
+                [0.5, 0.9],
+                [0.25, 0.55],
+                [0.5, 0.1],
+            ],
+            &[[0.5, 0.1], [0.5, 0.55]],
+        ],
+        Tool::Hand => &[
+            &[[0.25, 0.9], [0.15, 0.5]],
+            &[[0.35, 0.55], [0.35, 0.15]],
+            &[[0.5, 0.5], [0.5, 0.1]],
+            &[[0.65, 0.5], [0.65, 0.15]],
+            &[[0.8, 0.6], [0.8, 0.3]],
+            &[[0.8, 0.6], [0.72, 0.9], [0.25, 0.9]],
+        ],
+        Tool::Zoom => &[
+            &[
+                [0.7, 0.42],
+                [0.62, 0.62],
+                [0.42, 0.7],
+                [0.22, 0.62],
+                [0.14, 0.42],
+                [0.22, 0.22],
+                [0.42, 0.14],
+                [0.62, 0.22],
+                [0.7, 0.42],
+            ],
+            &[[0.62, 0.62], [0.9, 0.9]],
+        ],
+        Tool::Type => &[
+            &[[0.2, 0.15], [0.8, 0.15]],
+            &[[0.5, 0.15], [0.5, 0.88]],
+            &[[0.38, 0.88], [0.62, 0.88]],
+        ],
+        Tool::Wand => &[
+            &[[0.12, 0.88], [0.6, 0.4]],
+            &[[0.72, 0.1], [0.72, 0.38]],
+            &[[0.58, 0.24], [0.86, 0.24]],
+            &[[0.8, 0.46], [0.9, 0.56]],
+        ],
+    }
+}
 
 type ParamRow = (Option<Id>, String, f64, Option<(f64, f64)>);
 
@@ -50,6 +231,7 @@ fn frame(fill: u8) -> egui::Frame {
 
 impl App {
     pub(super) fn draw(&mut self, ui: &mut egui::Ui) {
+        self.panel_rects.clear();
         egui::Panel::top("menu").show(ui, |ui| self.menu(ui));
         egui::Panel::top("tabs").frame(frame(30)).show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -69,43 +251,58 @@ impl App {
                 }
             });
         });
-        egui::Panel::bottom("status")
+        let r = egui::Panel::bottom("status")
             .frame(frame(26))
             .show(ui, |ui| self.status_bar(ui));
+        self.panel_rects.push(("Status", r.response.rect));
         let h = ui.available_height();
         egui::Panel::bottom("lower")
             .resizable(true)
             .default_size(h * 0.48)
             .frame(frame(20))
             .show(ui, |ui| {
-                egui::Panel::left("bin")
+                let r = egui::Panel::left("bin")
                     .resizable(true)
                     .default_size(300.0)
                     .frame(frame(26))
                     .show(ui, |ui| self.bin_panel(ui));
+                let name = if self.show_effects {
+                    "Effects"
+                } else {
+                    "Project"
+                };
+                self.panel_rects.push((name, r.response.rect));
                 egui::Panel::left("tools")
                     .exact_size(64.0)
                     .frame(frame(30))
                     .show(ui, |ui| self.tool_bar(ui));
-                egui::Panel::right("meters")
+                let r = egui::Panel::right("meters")
                     .exact_size(56.0)
                     .frame(frame(26))
                     .show(ui, |ui| self.meters(ui));
+                self.panel_rects.push(("Meters", r.response.rect));
                 egui::CentralPanel::default()
                     .frame(frame(22))
                     .show(ui, |ui| self.timeline_panel(ui));
             });
         let w = ui.available_width();
-        egui::Panel::left("source")
+        let r = egui::Panel::left("source")
             .resizable(true)
             .default_size(w * 0.36)
             .frame(frame(26))
             .show(ui, |ui| self.source_panel(ui));
-        egui::Panel::right("requests")
+        let name = if self.show_effect_controls {
+            "Effect Controls"
+        } else {
+            "Source"
+        };
+        self.panel_rects.push((name, r.response.rect));
+        let r = egui::Panel::right("requests")
             .resizable(true)
             .default_size(260.0)
             .frame(frame(26))
             .show(ui, |ui| self.requests_panel(ui));
+        self.panel_rects.push(("Requests", r.response.rect));
         egui::CentralPanel::default()
             .frame(frame(26))
             .show(ui, |ui| self.program_panel(ui));
@@ -136,6 +333,9 @@ impl App {
                 }
                 ui.separator();
                 item(ui, "Import...", Action::Import);
+                if ui.button("AI Import...").clicked() {
+                    self.ai_import_pick();
+                }
                 item(ui, "Export Media...", Action::Export);
                 ui.separator();
                 if ui.button("Exit").clicked() {
@@ -151,6 +351,10 @@ impl App {
                 ui.separator();
                 item(ui, "Select All", Action::SelectAll);
                 item(ui, "Deselect All", Action::DeselectAll);
+                ui.separator();
+                if ui.button("Ask AI to Change adit...").clicked() {
+                    self.app_wand(None, None);
+                }
             });
             ui.menu_button("Clip", |ui| {
                 item(ui, "Speed/Duration...", Action::SpeedDialog);
@@ -277,21 +481,26 @@ impl App {
         let Some(t) = self.tabs.get_mut(self.active) else {
             return;
         };
-        ui.vertical_centered_justified(|ui| {
-            for &(tool, short, tip) in TOOLS {
-                if ui
-                    .add(
-                        egui::Button::selectable(t.ui.tool == tool, short)
-                            .small()
-                            .wrap_mode(egui::TextWrapMode::Extend),
-                    )
-                    .on_hover_text(tip)
-                    .clicked()
-                {
-                    t.ui.tool = tool;
-                }
+        for &(tool, name, key, what) in TOOLS {
+            let on = t.ui.tool == tool;
+            let (rect, r) = ui
+                .allocate_exact_size(egui::vec2(ui.available_width(), 24.0), egui::Sense::click());
+            r.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, on, name));
+            let v = ui.style().interact_selectable(&r, on);
+            let p = ui.painter();
+            p.rect_filled(rect, 3.0, v.weak_bg_fill);
+            let sq = egui::Rect::from_center_size(rect.center(), egui::vec2(18.0, 18.0));
+            for line in icon(tool) {
+                let pts = line.iter().map(|&[x, y]| sq.min + egui::vec2(x, y) * 18.0);
+                p.add(egui::Shape::line(
+                    pts.collect(),
+                    egui::Stroke::new(1.5, v.fg_stroke.color),
+                ));
             }
-        });
+            if r.on_hover_text(format!("{name} ({key})\n{what}")).clicked() {
+                t.ui.tool = tool;
+            }
+        }
     }
 
     fn meters(&mut self, ui: &mut egui::Ui) {
@@ -467,6 +676,23 @@ impl App {
                     RichText::new(timecode(playhead, f)).color(Color32::from_rgb(90, 160, 255)),
                 );
             }
+            // Preview resolution (U-ED-17): the current choice, a menu of the others.
+            let scales = [(1, "Full"), (2, "1/2"), (4, "1/4")];
+            let cur = self.preview_scale;
+            let mut pick = None;
+            let name = scales.iter().find(|s| s.0 == cur).map_or("1/2", |s| s.1);
+            ui.menu_button(name, |ui| {
+                for &(d, n) in scales.iter().filter(|s| s.0 != cur) {
+                    if ui.button(n).clicked() {
+                        pick = Some(d);
+                    }
+                }
+            })
+            .response
+            .on_hover_text("Preview resolution");
+            if let Some(d) = pick {
+                self.preview_scale = d;
+            }
             let playing = self.ui_state().is_some_and(|u| u.playing);
             let buttons = [
                 ("|<", Action::GoToStart, "Go to start (Home)"),
@@ -563,6 +789,11 @@ impl App {
         if ui.button("Import...").clicked() {
             self.run_action(Action::Import);
         }
+        // Right-click menu of the Project panel (U-ED-19).
+        let mut ai = false;
+        let ai_menu = |r: &egui::Response, ai: &mut bool| {
+            r.context_menu(|ui| *ai |= ui.button("AI Import...").clicked());
+        };
         let Some(t) = self.tabs.get_mut(self.active) else {
             return;
         };
@@ -582,6 +813,7 @@ impl App {
                         .sense(egui::Sense::click_and_drag()),
                 );
                 r.dnd_set_drag_payload(m.id);
+                ai_menu(&r, &mut ai);
                 if r.double_clicked() {
                     t.ui.source = Some(SourceState {
                         media_id: m.id,
@@ -593,9 +825,14 @@ impl App {
                 }
             }
         });
+        let rest = ui.allocate_response(ui.available_size(), egui::Sense::click());
+        ai_menu(&rest, &mut ai);
+        if ai {
+            self.ai_import_pick();
+        }
     }
 
-    fn refresh_effects(&mut self) {
+    pub(super) fn refresh_effects(&mut self) {
         let Some(t) = self.tab() else { return };
         let key = (t.id.clone(), t.revision);
         if self.effects_at.as_ref() == Some(&key) {
@@ -621,9 +858,17 @@ impl App {
                 } else {
                     "Transitions"
                 });
-                for e in self.effects.iter().filter(|e| e["kind"] == kind) {
+                // The user's own library effects first in each group, where they are seen.
+                let mut list: Vec<_> = self.effects.iter().filter(|e| e["kind"] == kind).collect();
+                list.sort_by_key(|e| e["origin"] != "library");
+                for e in list {
                     let name = e["name"].as_str().unwrap_or_default();
-                    if ui.selectable_label(false, name).double_clicked() {
+                    let shown = if e["origin"] == "library" {
+                        format!("{name} (library)")
+                    } else {
+                        name.to_string()
+                    };
+                    if ui.selectable_label(false, shown).double_clicked() {
                         apply = Some((name.to_string(), kind == "transition"));
                     }
                 }
@@ -710,6 +955,26 @@ impl App {
         let local = (t.ui.playhead - clip.start).clamp(0, clip.duration);
         let mut cmds: Vec<Command> = Vec::new();
         ui.label(RichText::new(&clip.name).strong());
+        if kind == TrackKind::Video {
+            ui.checkbox(&mut self.uniform_scale, "Uniform Scale");
+        }
+        // U-ED-15: with Uniform Scale, an edit or keyframe of Scale X or Y acts on both.
+        let uniform = self.uniform_scale && kind == TrackKind::Video;
+        let acts_on = |eff: Option<Id>, name: &str| -> Vec<String> {
+            if uniform && eff.is_none() && (name == "scale_x" || name == "scale_y") {
+                vec!["scale_x".into(), "scale_y".into()]
+            } else {
+                vec![name.to_string()]
+            }
+        };
+        let param_of = |eff: Option<Id>, n: &str| match eff {
+            None => clip.params.get(n),
+            Some(id) => clip
+                .effects
+                .iter()
+                .find(|e| e.id == id)
+                .and_then(|e| e.params.get(n)),
+        };
         // (effect instance or built-in, parameter, value at the playhead, range)
         let mut rows: Vec<ParamRow> = Vec::new();
         let video = [
@@ -788,67 +1053,78 @@ impl App {
                         }
                         last_effect = eff;
                     }
-                    let target = ParamTarget {
+                    let target = |name: String| ParamTarget {
                         clip_id: clip.id,
                         effect_id: eff,
-                        name: name.clone(),
+                        name,
                     };
-                    let param = match eff {
-                        None => clip.params.get(&name),
-                        Some(id) => clip
-                            .effects
-                            .iter()
-                            .find(|e| e.id == id)
-                            .and_then(|e| e.params.get(&name)),
+                    let has_key = |n: &str| {
+                        param_of(eff, n)
+                            .is_some_and(|p| p.keyframes.iter().any(|k| k.time == local))
                     };
-                    let keyed = param.is_some_and(|p| !p.keyframes.is_empty());
-                    let at_key = param.is_some_and(|p| p.keyframes.iter().any(|k| k.time == local));
-                    ui.label(&name);
+                    let at_key = has_key(&name);
+                    let shown = match name.as_str() {
+                        "scale_x" => "Scale X",
+                        "scale_y" => "Scale Y",
+                        n => n,
+                    };
+                    let label = ui.label(shown);
                     let key = format!("{}/{eff:?}/{name}", clip.id);
                     let mut v = self.fx_drag.get(&key).copied().unwrap_or(cur);
                     let mut dv = egui::DragValue::new(&mut v).speed(0.01).max_decimals(3);
                     if let Some((a, b)) = range {
                         dv = dv.range(a..=b);
                     }
-                    let r = ui.add(dv);
+                    let r = ui.add(dv).labelled_by(label.id);
                     if r.changed() {
                         self.fx_drag.insert(key.clone(), v);
                     }
                     if ((r.changed() && !r.dragged()) || r.drag_stopped())
                         && let Some(v) = self.fx_drag.remove(&key)
                     {
-                        cmds.push(if keyed {
-                            Command::SetKeyframe {
-                                target: target.clone(),
-                                time: local,
-                                value: v,
-                                easing: Easing::Linear,
-                            }
-                        } else {
-                            Command::SetParam {
-                                target: target.clone(),
-                                value: v,
-                            }
-                        });
+                        for n in acts_on(eff, &name) {
+                            let keyed = param_of(eff, &n).is_some_and(|p| !p.keyframes.is_empty());
+                            cmds.push(if keyed {
+                                Command::SetKeyframe {
+                                    target: target(n),
+                                    time: local,
+                                    value: v,
+                                    easing: Easing::Linear,
+                                }
+                            } else {
+                                Command::SetParam {
+                                    target: target(n),
+                                    value: v,
+                                }
+                            });
+                        }
                     }
                     if ui
                         .add(egui::Button::selectable(at_key, "Key").small())
                         .on_hover_text("Keyframe at the playhead")
                         .clicked()
                     {
-                        cmds.push(if at_key {
-                            Command::RemoveKeyframe {
-                                target,
-                                time: local,
+                        // Each param toggles to the clicked one's new state.
+                        for n in acts_on(eff, &name) {
+                            let value = if n == name {
+                                cur
+                            } else {
+                                clip.param(&n, local).unwrap_or(cur)
+                            };
+                            match (at_key, has_key(&n)) {
+                                (true, true) => cmds.push(Command::RemoveKeyframe {
+                                    target: target(n),
+                                    time: local,
+                                }),
+                                (false, false) => cmds.push(Command::SetKeyframe {
+                                    target: target(n),
+                                    time: local,
+                                    value,
+                                    easing: Easing::Linear,
+                                }),
+                                _ => {}
                             }
-                        } else {
-                            Command::SetKeyframe {
-                                target,
-                                time: local,
-                                value: cur,
-                                easing: Easing::Linear,
-                            }
-                        });
+                        }
                     }
                     ui.end_row();
                 }
@@ -974,9 +1250,15 @@ impl App {
                     "claimed" => Color32::from_rgb(240, 190, 60),
                     _ => Color32::from_gray(170),
                 };
+                // U-ED-18 / U-ED-21: requests about adit itself or an import say so.
+                let scope = match r["scope"].as_str() {
+                    Some("app") => "[app] ",
+                    Some("import") => "[import] ",
+                    _ => "",
+                };
                 ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new(status).color(color).small());
-                    ui.label(r["text"].as_str().unwrap_or_default());
+                    ui.label(format!("{scope}{}", r["text"].as_str().unwrap_or_default()));
                 });
                 if let Some(m) = r["message"].as_str().filter(|m| !m.is_empty()) {
                     ui.label(RichText::new(m).italics());
@@ -1069,6 +1351,26 @@ impl App {
                     close |= ui.button("Cancel").clicked();
                 });
             }
+            Dialog::AiImport { paths, text, .. } => {
+                ui.heading("AI Import");
+                for p in paths.iter() {
+                    ui.label(p.as_str());
+                }
+                let label = ui.label("Instructions");
+                ui.add(
+                    egui::TextEdit::multiline(text)
+                        .desired_rows(3)
+                        .hint_text("How should Claude bring these in?"),
+                )
+                .labelled_by(label.id);
+                ui.horizontal(|ui| {
+                    if ui.button("Send").clicked() {
+                        send = true;
+                        close = true;
+                    }
+                    close |= ui.button("Cancel").clicked();
+                });
+            }
             Dialog::ConfirmClose => {
                 ui.heading("Unsaved changes");
                 ui.label("Some projects have unsaved changes. Quit anyway?");
@@ -1137,11 +1439,25 @@ impl App {
             mark_in,
             mark_out,
             rect,
+            app,
+            panel,
             ..
         } = d
         else {
             return String::new();
         };
+        if *app {
+            let at = panel
+                .as_ref()
+                .map(|p| format!(", the {p} panel"))
+                .unwrap_or_default();
+            let rect = if rect.is_some() {
+                ", a rectangle of the window"
+            } else {
+                ""
+            };
+            return format!("A change to adit itself{at}{rect}");
+        }
         let fps = self
             .tabs
             .iter()
@@ -1164,35 +1480,75 @@ impl App {
         format!("{range}, {} clip(s) selected{rect}", clips.len())
     }
 
-    /// U-APP-5: files the request for Claude, with what the prompt captured when it opened.
+    /// U-APP-5, U-ED-18, U-ED-19: files the request for Claude, with what the prompt captured
+    /// when it opened.
     fn send_request(&mut self, d: &Dialog) {
-        let Dialog::Wand {
-            pid,
-            sequence_id,
-            clips,
-            mark_in,
-            mark_out,
-            rect,
-            text,
-        } = d
-        else {
-            return;
+        let args = match d {
+            Dialog::Wand {
+                pid,
+                sequence_id,
+                text,
+                rect,
+                app: true,
+                panel,
+                ..
+            } => {
+                let mut args = json!({
+                    "scope": "app",
+                    "project_id": pid,
+                    "sequence_id": sequence_id,
+                    "text": text,
+                });
+                if let Some(p) = panel {
+                    args["panel"] = json!(p);
+                }
+                if let Some(r) = rect {
+                    args["rect"] = json!(r);
+                }
+                args
+            }
+            Dialog::Wand {
+                pid,
+                sequence_id,
+                clips,
+                mark_in,
+                mark_out,
+                rect,
+                text,
+                ..
+            } => {
+                let mut args = json!({
+                    "project_id": pid,
+                    "sequence_id": sequence_id,
+                    "text": text,
+                    "clip_ids": clips,
+                });
+                if let Some(a) = mark_in {
+                    args["start"] = json!(a);
+                }
+                if let Some(b) = mark_out {
+                    args["end"] = json!(b);
+                }
+                if let Some(r) = rect {
+                    args["rect"] = json!(r);
+                }
+                args
+            }
+            Dialog::AiImport {
+                pid,
+                sequence_id,
+                paths,
+                text,
+            } => json!({
+                "scope": "import",
+                "project_id": pid,
+                "sequence_id": sequence_id,
+                "paths": paths,
+                "text": text,
+            }),
+            _ => return,
         };
-        let mut args = json!({
-            "project_id": pid,
-            "sequence_id": sequence_id,
-            "text": text,
-            "clip_ids": clips,
-        });
-        if let Some(a) = mark_in {
-            args["start"] = json!(a);
-        }
-        if let Some(b) = mark_out {
-            args["end"] = json!(b);
-        }
-        if let Some(r) = rect {
-            args["rect"] = json!(r);
-        }
+
         if let Some(v) = self.call("request_create", args) {
             self.status = format!("request {} sent to Claude", v["request_id"]);
             self.polled = None;

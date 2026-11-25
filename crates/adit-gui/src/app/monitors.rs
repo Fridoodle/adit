@@ -11,9 +11,9 @@ use std::sync::Arc;
 type Picture = Result<egui::ColorImage, String>;
 
 pub struct Monitors {
-    program: Worker<(Arc<Project>, Id, Time), Picture>,
+    program: Worker<(Arc<Project>, Id, Time, u32), Picture>,
     source: Worker<(String, Time), Picture>,
-    program_key: Option<(String, u64, Id, Time)>,
+    program_key: Option<(String, u64, Id, Time, u32)>,
     source_key: Option<(String, Time)>,
     program_new: Option<Picture>,
     source_new: Option<Picture>,
@@ -40,9 +40,9 @@ impl Monitors {
     pub fn new(ctx: &egui::Context, session: &Session) -> Self {
         let (s1, s2) = (session.clone(), session.clone());
         Monitors {
-            // shortcut: full-resolution CPU round trip per preview frame, add a preview scale when playback is too slow.
-            program: Worker::new(ctx, move |(p, seq, t): (Arc<Project>, Id, Time)| {
-                guarded(|| s1.render(&p, seq, t).and_then(|f| picture(&f)))
+            // Rendered at the preview divisor of U-ED-17.
+            program: Worker::new(ctx, move |(p, seq, t, d): (Arc<Project>, Id, Time, u32)| {
+                guarded(|| s1.render_scaled(&p, seq, t, d).and_then(|f| picture(&f)))
             }),
             source: Worker::new(ctx, move |(path, t): (String, Time)| {
                 guarded(|| s2.source_frame(&path, t).and_then(|f| picture(&f)))
@@ -65,12 +65,13 @@ impl Monitors {
         rev: u64,
         project: &Arc<Project>,
         ui: &UiState,
+        scale: u32,
         status: &mut String,
     ) {
-        let key = (pid.to_string(), rev, ui.sequence_id, ui.playhead);
+        let key = (pid.to_string(), rev, ui.sequence_id, ui.playhead, scale);
         if self.program_key.as_ref() != Some(&key) {
             self.program
-                .request((project.clone(), ui.sequence_id, ui.playhead));
+                .request((project.clone(), ui.sequence_id, ui.playhead, scale));
             self.program_key = Some(key);
         }
         let src = ui.source.as_ref().and_then(|s| {

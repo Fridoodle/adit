@@ -1,8 +1,9 @@
-//! The Timeline panel: drawing, mouse gestures and bin drops (U-APP-1, U-APP-4).
+//! The Timeline panel: drawing, mouse gestures, right-click menu and drops (U-APP-1, U-APP-4,
+//! U-ED-10, U-ED-12 .. U-ED-14).
 
 use super::{App, S, timecode};
-use crate::{ClipPart, Drag, Hit, TimelineLayout, Tool};
-use adit_core::{ClipSource, Command, Id, PlaceMode, Project, Time, TrackKind};
+use crate::{Action, ClipPart, Drag, Hit, MenuItem, TimelineLayout, Tool, UiState};
+use adit_core::{ClipSource, Command, Id, PlaceMode, Project, Sequence, Time, TrackKind};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, pos2, vec2};
 
 const HEADER: f32 = 150.0;
@@ -10,7 +11,20 @@ const RULER: f32 = 24.0;
 const TRACK: f32 = 44.0;
 const EDGE: f32 = 6.0;
 
-fn layout(ui: &crate::UiState) -> TimelineLayout {
+/// Clip colour labels 0..=8 (U-ED-10, U-ED-14); 0 keeps the clip's kind colour.
+const LABELS: [(&str, Color32); 9] = [
+    ("None", Color32::TRANSPARENT),
+    ("Violet", Color32::from_rgb(166, 140, 218)),
+    ("Iris", Color32::from_rgb(93, 120, 236)),
+    ("Caribbean", Color32::from_rgb(35, 191, 168)),
+    ("Lavender", Color32::from_rgb(227, 146, 227)),
+    ("Cerulean", Color32::from_rgb(29, 165, 226)),
+    ("Forest", Color32::from_rgb(99, 153, 43)),
+    ("Rose", Color32::from_rgb(241, 93, 141)),
+    ("Mango", Color32::from_rgb(241, 155, 47)),
+];
+
+fn layout(ui: &UiState) -> TimelineLayout {
     TimelineLayout {
         px_per_sec: ui.px_per_sec,
         scroll: ui.scroll,
@@ -31,9 +45,67 @@ fn tick_step(px_per_sec: f64) -> f64 {
     .unwrap_or(3600.0)
 }
 
+/// Snap tolerance: 8 px in time (U-APP-4, U-ED-21).
+fn tolerance(ui: &UiState) -> Time {
+    (8.0 * S / ui.px_per_sec).round() as Time
+}
+
+/// Button text of a context-menu action (U-ED-10).
+fn menu_text(a: Action) -> &'static str {
+    match a {
+        Action::Cut => "Cut",
+        Action::Copy => "Copy",
+        Action::Paste => "Paste",
+        Action::Delete => "Delete",
+        Action::RippleDelete | Action::CloseGap { .. } => "Ripple Delete",
+        Action::Unlink => "Ungroup Audio/Video",
+        Action::Group => "Group",
+        Action::Ungroup => "Ungroup Clips",
+        Action::ToggleEnable => "Enable/Disable",
+        Action::SpeedDialog => "Speed...",
+        Action::GainDialog => "Audio Gain...",
+        Action::WandPrompt => "Ask AI...",
+        _ => "?",
+    }
+}
+
+/// Clips a `Select` body drag of `clip_id` moves: the selection if it holds the clip, else the
+/// clip, with linked partners when linked selection is on (as `drag` moves them).
+fn moving(seq: &Sequence, clip_id: Id, ui: &UiState) -> Vec<Id> {
+    let mut ids = if ui.selection.contains(&clip_id) {
+        ui.selection.clone()
+    } else {
+        vec![clip_id]
+    };
+    if ui.linked_selection {
+        let all = || seq.tracks.iter().flat_map(|t| &t.clips);
+        let links: Vec<Id> = all()
+            .filter(|c| ids.contains(&c.id))
+            .filter_map(|c| c.link)
+            .collect();
+        ids.extend(
+            all()
+                .filter(|c| c.link.is_some_and(|l| links.contains(&l)) && !ids.contains(&c.id))
+                .map(|c| c.id)
+                .collect::<Vec<_>>(),
+        );
+    }
+    ids
+}
+
 impl App {
     pub(super) fn timeline_panel(&mut self, ui: &mut egui::Ui) {
+        self.pointer_track = None;
+        if self.menu.is_some() || ui.input(|i| i.pointer.secondary_clicked()) {
+            self.refresh_effects();
+        }
+        if let Some(done) = self.waves.latest() {
+            for (path, w) in done {
+                self.wave_cache.insert(path, Some(w));
+            }
+        }
         let mut switch = None;
+        let mut toggle_snap = false;
         ui.horizontal(|ui| {
             ui.strong("Timeline");
             if let Some(t) = self.tab()
@@ -50,10 +122,15 @@ impl App {
                 .response
                 .on_hover_text("Sequence");
                 ui.monospace(timecode(t.ui.playhead, seq.fps));
-                let snap = if t.ui.snap { "Snap on" } else { "Snap off" };
-                ui.weak(snap);
+                toggle_snap = ui
+                    .add(egui::Button::selectable(t.ui.snap, "Snap"))
+                    .on_hover_text("Snapping (S)")
+                    .clicked();
             }
         });
+        if toggle_snap {
+            self.run_action(Action::ToggleSnap);
+        }
         if let (Some(id), Some(t)) = (switch, self.tabs.get_mut(self.active)) {
             super::bridge::switch_sequence(&mut t.ui, id);
             self.timeline_scroll_y = 0.0;
@@ -84,6 +161,98 @@ impl App {
         };
         let area = Rect::from_min_max(pos2(rect.left() + HEADER, rect.top()), rect.max);
         let rows_area = area.intersect(rows_rect);
+
+        // Mouse gestures (U-APP-4): hit on press, snap, `drag` on release.
+        let (mods, press_pos, pos, latest) = ui.input(|i| {
+            (
+                i.modifiers,
+                i.pointer.press_origin(),
+                i.pointer.interact_pos(),
+                i.pointer.latest_pos(),
+            )
+        });
+        let row_at = |y: f32| -> Option<Id> {
+            let i = ((y - RULER) / TRACK).floor();
+            (y >= RULER && i >= 0.0)
+                .then(|| rows.get(i as usize).copied())
+                .flatten()
+        };
+        let raw_time = |x: f32| lay.x_to_time(x.max(HEADER)).max(0);
+        // U-ED-12: a `Select` body drag snaps the moved clips' edges, not the pointer.
+        let body_move = |h: &Hit, u: &UiState| {
+            u.tool == Tool::Select
+                && matches!(
+                    h,
+                    Hit::Clip {
+                        part: ClipPart::Body,
+                        ..
+                    }
+                )
+        };
+        // U-FIX-4: pointer times are snapped for clicks and drags alike; U-FIX-3: not for Hand.
+        let pointer_time = |x: f32, from: &Hit, ui_state: &UiState| {
+            let raw = raw_time(x);
+            if ui_state.tool == Tool::Hand {
+                return raw;
+            }
+            let exclude = match *from {
+                Hit::Clip { clip_id, .. } if ui_state.selection.contains(&clip_id) => {
+                    ui_state.selection.clone()
+                }
+                Hit::Clip { clip_id, .. } => vec![clip_id],
+                _ => vec![],
+            };
+            crate::snap(raw, &project, ui_state, &exclude, tolerance(ui_state))
+        };
+        let pressed = |p: Pos2, ui_state: &UiState| {
+            let (x, y) = local(p);
+            let h = lay.hit(&project, seq.id, x, y);
+            let time = if body_move(&h, ui_state) {
+                raw_time(x)
+            } else {
+                pointer_time(x, &h, ui_state)
+            };
+            with_time(h, time)
+        };
+        let make_drag = |from: Hit, p: Pos2, ui_state: &UiState, click: bool| {
+            let (x, y) = local(p);
+            let (to_time, to_track) = if click {
+                (hit_time(&from), hit_track(&from))
+            } else if let Hit::Clip { clip_id, time, .. } = from
+                && body_move(&from, ui_state)
+            {
+                let ids = moving(seq, clip_id, ui_state);
+                let d = crate::snap_delta(
+                    raw_time(x) - time,
+                    &ids,
+                    &project,
+                    ui_state,
+                    tolerance(ui_state),
+                );
+                (time + d, row_at(y))
+            } else {
+                (pointer_time(x, &from, ui_state), row_at(y))
+            };
+            Drag {
+                from,
+                to_time,
+                to_track,
+                shift: mods.shift,
+                alt: mods.alt,
+            }
+        };
+        // U-ED-13: while a gesture is dragged, the clips as it would leave them.
+        let dragging = match (self.press, pos) {
+            (Some(from), Some(p)) if resp.dragged() && !matches!(from, Hit::Ruler { .. }) => {
+                Some(make_drag(from, p, &t.ui, false))
+            }
+            _ => None,
+        };
+        let after = dragging.and_then(|d| crate::preview(d, &project, &t.ui));
+        let shown = after
+            .as_ref()
+            .and_then(|p| p.sequence(seq.id))
+            .unwrap_or(seq);
 
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, Color32::from_gray(22));
@@ -141,8 +310,9 @@ impl App {
         // Tracks and clips; rows scrolled out of view get no widgets.
         let mut toggles: Vec<Command> = Vec::new();
         let mut target_click = None;
+        let mut want_waves: Vec<String> = Vec::new();
         for (i, &tid) in rows.iter().enumerate() {
-            let Some(track) = seq.tracks.iter().find(|x| x.id == tid) else {
+            let Some(track) = shown.tracks.iter().find(|x| x.id == tid) else {
                 continue;
             };
             let y = row_top(i);
@@ -199,17 +369,18 @@ impl App {
                 if x1 < area.left() || x0 > area.right() {
                     continue;
                 }
-                let offline = match c.source {
-                    ClipSource::Media { media_id } => project
-                        .media
-                        .iter()
-                        .find(|m| m.id == media_id)
-                        .is_some_and(|m| self.offline.get(&m.spec.path) == Some(&Some(false))),
-                    _ => false,
+                let media = match c.source {
+                    ClipSource::Media { media_id } => {
+                        project.media.iter().find(|m| m.id == media_id)
+                    }
+                    _ => None,
                 };
+                let offline =
+                    media.is_some_and(|m| self.offline.get(&m.spec.path) == Some(&Some(false)));
                 let r = Rect::from_x_y_ranges(x0..=x1.max(x0 + 1.0), y + 3.0..=y + TRACK - 3.0);
                 let base = match (&c.source, track.kind) {
                     _ if offline => Color32::from_rgb(150, 50, 50),
+                    _ if (1..=8).contains(&c.label) => LABELS[c.label as usize].1,
                     (_, TrackKind::Audio) => Color32::from_rgb(60, 130, 90),
                     (ClipSource::Text { .. }, _) => Color32::from_rgb(140, 90, 170),
                     (ClipSource::Solid { .. } | ClipSource::Adjustment, _) => {
@@ -226,6 +397,36 @@ impl App {
                     base
                 };
                 area_painter.rect_filled(r, 3.0, fill);
+                // Waveform of the clip's source range, computed off the UI thread (U-ED-14).
+                if let (TrackKind::Audio, Some(m)) = (track.kind, media) {
+                    match self.wave_cache.get(&m.spec.path) {
+                        Some(Some(Ok(peaks))) => {
+                            let (mid, half) = (r.center().y, r.height() / 2.0 - 2.0);
+                            let src = |x: f32| {
+                                let at = lay.x_to_time(x - rect.left());
+                                (c.source_time(at) as f64 / S * 50.0).max(0.0) as usize
+                            };
+                            let mut x = r.left().max(area.left());
+                            while x < r.right().min(area.right()) {
+                                let (a, b) = (src(x), src(x + 1.0));
+                                let (a, b) = (a.min(b), a.max(b).max(a.min(b) + 1));
+                                let pk = peaks
+                                    .get(a..b.min(peaks.len()))
+                                    .and_then(|s| s.iter().copied().reduce(f32::max))
+                                    .unwrap_or(0.0);
+                                if pk > 0.0 {
+                                    area_painter.line_segment(
+                                        [pos2(x, mid - pk * half), pos2(x, mid + pk * half)],
+                                        Stroke::new(1.0, Color32::from_rgb(30, 70, 45)),
+                                    );
+                                }
+                                x += 1.0;
+                            }
+                        }
+                        Some(_) => {}
+                        None => want_waves.push(m.spec.path.clone()),
+                    }
+                }
                 // A 1 px outline keeps adjacent clips apart (U-FIX-7).
                 let stroke = if selected {
                     Stroke::new(1.5, Color32::WHITE)
@@ -253,6 +454,35 @@ impl App {
                         .wrap_mode(egui::TextWrapMode::Extend),
                 );
             }
+            // U-ED-13: ranges that held a clip and lose it, or get another one, in red.
+            if after.is_some()
+                && let Some(old) = seq.tracks.iter().find(|x| x.id == tid)
+            {
+                for oc in &old.clips {
+                    let same: Vec<_> = track.clips.iter().filter(|c| c.id == oc.id).collect();
+                    let mut cuts = vec![oc.start, oc.end()];
+                    for c in &same {
+                        cuts.extend([c.start, c.end()]);
+                    }
+                    cuts.retain(|&x| x >= oc.start && x <= oc.end());
+                    cuts.sort_unstable();
+                    cuts.dedup();
+                    for w in cuts.windows(2) {
+                        let m = (w[0] + w[1]) / 2;
+                        if !same.iter().any(|c| c.start <= m && m < c.end()) {
+                            area_painter.rect_filled(
+                                Rect::from_x_y_ranges(
+                                    x_of(w[0])..=x_of(w[1]),
+                                    y + 3.0..=y + TRACK - 3.0,
+                                ),
+                                3.0,
+                                Color32::from_rgba_unmultiplied(230, 40, 40, 90),
+                            );
+                        }
+                    }
+                }
+            }
+            // U-ED-14: a transition is a named box over its range at the top of the row.
             for tr in &track.transitions {
                 let left = tr
                     .left
@@ -266,17 +496,45 @@ impl App {
                     (None, Some(r)) => (r.start, r.start + tr.duration),
                     (None, None) => continue,
                 };
-                let r = Rect::from_x_y_ranges(x_of(a)..=x_of(b), y + 3.0..=y + 15.0);
+                let r = Rect::from_x_y_ranges(x_of(a)..=x_of(b), y + 3.0..=y + 17.0);
                 area_painter.rect_filled(
                     r,
                     2.0,
-                    Color32::from_rgba_unmultiplied(255, 255, 255, 90),
+                    Color32::from_rgba_unmultiplied(230, 230, 230, 150),
+                );
+                area_painter.rect_stroke(
+                    r,
+                    2.0,
+                    Stroke::new(1.0, Color32::BLACK),
+                    egui::StrokeKind::Inside,
                 );
                 area_painter.line_segment(
                     [r.left_bottom(), r.right_top()],
-                    Stroke::new(1.0, Color32::BLACK),
+                    Stroke::new(1.0, Color32::from_gray(60)),
                 );
+                if r.width() >= 60.0 {
+                    area_painter.with_clip_rect(r.intersect(rows_area)).text(
+                        r.center(),
+                        egui::Align2::CENTER_CENTER,
+                        &tr.effect,
+                        egui::FontId::proportional(10.0),
+                        Color32::BLACK,
+                    );
+                }
             }
+        }
+        if !want_waves.is_empty() {
+            for p in want_waves {
+                self.wave_cache.insert(p, None);
+            }
+            // The newest request wins in `Worker`, so it names every waveform still missing.
+            let missing: Vec<String> = self
+                .wave_cache
+                .iter()
+                .filter(|(_, w)| w.is_none())
+                .map(|(p, _)| p.clone())
+                .collect();
+            self.waves.request(missing);
         }
         if max_scroll > 0.0 {
             let h = rows_rect.height();
@@ -314,97 +572,128 @@ impl App {
             Stroke::NONE,
         ));
 
-        // Mouse gestures (U-APP-4): hit on press, snap, `drag` on release.
-        let (mods, press_pos, pos) = ui.input(|i| {
-            (
-                i.modifiers,
-                i.pointer.press_origin(),
-                i.pointer.interact_pos(),
-            )
-        });
-        let row_at = |y: f32| -> Option<Id> {
-            let i = ((y - RULER) / TRACK).floor();
-            (y >= RULER && i >= 0.0)
-                .then(|| rows.get(i as usize).copied())
-                .flatten()
-        };
-        // U-FIX-4: pointer times are snapped for clicks and drags alike; U-FIX-3: not for Hand.
-        let pointer_time = |x: f32, from: &Hit, ui_state: &crate::UiState| {
-            let raw = lay.x_to_time(x.max(HEADER)).max(0);
-            if ui_state.tool == Tool::Hand {
-                return raw;
-            }
-            let exclude = match *from {
-                Hit::Clip { clip_id, .. } if ui_state.selection.contains(&clip_id) => {
-                    ui_state.selection.clone()
-                }
-                Hit::Clip { clip_id, .. } => vec![clip_id],
-                _ => vec![],
-            };
-            let tol = (8.0 * S / ui_state.px_per_sec).round() as Time;
-            crate::snap(raw, &project, ui_state, &exclude, tol)
-        };
-        let pressed = |p: Pos2, ui_state: &crate::UiState| {
-            let (x, y) = local(p);
-            let h = lay.hit(&project, seq.id, x, y);
-            with_time(h, pointer_time(x, &h, ui_state))
-        };
         let mut ops = Vec::new();
-        let finish = |from: Hit, p: Pos2, ui_state: &mut crate::UiState, click: bool| {
-            let (x, y) = local(p);
-            let (to_time, to_track) = if click {
-                (hit_time(&from), hit_track(&from))
-            } else {
-                (pointer_time(x, &from, ui_state), row_at(y))
-            };
-            crate::drag(
-                Drag {
-                    from,
-                    to_time,
-                    to_track,
-                    shift: mods.shift,
-                    alt: mods.alt,
-                },
-                &project,
-                ui_state,
-            )
-        };
+        if let Some(d) = dragging {
+            // With no result to show, the outline of U-APP-4.
+            if after.is_none() {
+                preview(
+                    &area_painter,
+                    &project,
+                    &t.ui,
+                    d.from,
+                    d.to_time,
+                    d.to_track,
+                    &rows,
+                    &|tt| x_of(tt),
+                    &row_top,
+                );
+            }
+            // U-ED-12: a line at the candidate a moved edge snapped to.
+            if let (Hit::Clip { clip_id, time, .. }, Some(p)) = (d.from, pos)
+                && body_move(&d.from, &t.ui)
+            {
+                let ids = moving(seq, clip_id, &t.ui);
+                let raw = raw_time(local(p).0) - time;
+                let mut off = t.ui.clone();
+                off.snap = false;
+                let tol = tolerance(&t.ui);
+                let got = d.to_time - time;
+                if got != crate::snap_delta(raw, &ids, &project, &off, tol) {
+                    let edge = ids
+                        .iter()
+                        .filter_map(|&id| project.clip(id))
+                        .flat_map(|(_, _, c)| [c.start, c.end()])
+                        .find(|&e| crate::snap(e + raw, &project, &t.ui, &ids, tol) == e + got);
+                    if let Some(e) = edge {
+                        let x = x_of(e + got);
+                        area_painter.line_segment(
+                            [pos2(x, rows_area.top()), pos2(x, rows_area.bottom())],
+                            Stroke::new(1.0, Color32::from_rgb(120, 220, 255)),
+                        );
+                    }
+                }
+            }
+        }
         if resp.drag_started()
             && let Some(p) = press_pos
         {
             self.press = Some(pressed(p, &t.ui));
         }
         if let (Some(from), Some(p)) = (self.press, pos) {
-            if resp.dragged() {
-                if matches!(from, Hit::Ruler { .. }) {
-                    // Live scrubbing: a ruler drag only moves the playhead.
-                    ops.extend(finish(from, p, &mut t.ui, false));
-                } else {
-                    let (x, y) = local(p);
-                    let to = pointer_time(x, &from, &t.ui);
-                    preview(
-                        &area_painter,
-                        &project,
-                        &t.ui,
-                        from,
-                        to,
-                        row_at(y),
-                        &rows,
-                        &|tt| x_of(tt),
-                        &row_top,
-                    );
-                }
+            if resp.dragged() && matches!(from, Hit::Ruler { .. }) {
+                // Live scrubbing: a ruler drag only moves the playhead.
+                ops.extend(crate::drag(
+                    make_drag(from, p, &t.ui, false),
+                    &project,
+                    &mut t.ui,
+                ));
             }
             if resp.drag_stopped() {
                 self.press = None;
-                ops.extend(finish(from, p, &mut t.ui, false));
+                let d = make_drag(from, p, &t.ui, false);
+                ops.extend(crate::drag(d, &project, &mut t.ui));
             }
         }
         if resp.clicked()
             && let Some(p) = press_pos.or(pos)
         {
             let from = pressed(p, &t.ui);
-            ops.extend(finish(from, p, &mut t.ui, true));
+            let d = make_drag(from, p, &t.ui, true);
+            ops.extend(crate::drag(d, &project, &mut t.ui));
+        }
+        // Right click: the menu of U-ED-9 at the hit, its time on a frame, not snapped.
+        if resp.secondary_clicked()
+            && let Some(p) = pos
+        {
+            let (x, y) = local(p);
+            let h = lay.hit(&project, seq.id, x, y);
+            let h = with_time(h, super::frame(hit_time(&h), seq.fps));
+            let items = crate::context_menu(h, !self.clipboard.is_empty(), &project, &mut t.ui);
+            self.menu = (!items.is_empty()).then_some((h, items));
+        }
+        let mut chosen = None;
+        let mut transition = None;
+        if let Some((hit, items)) = &self.menu {
+            let kind = hit_track(hit)
+                .and_then(|id| project.track(id))
+                .map(|(_, tr)| tr.kind);
+            let effects = &self.effects;
+            resp.context_menu(|ui| {
+                for it in items {
+                    match it {
+                        MenuItem::Do(a) => {
+                            if ui.button(menu_text(*a)).clicked() {
+                                chosen = Some(*a);
+                            }
+                        }
+                        MenuItem::Labels => {
+                            ui.menu_button("Label", |ui| {
+                                for (n, (name, _)) in LABELS.iter().enumerate() {
+                                    if ui.button(*name).clicked() {
+                                        chosen = Some(Action::SetLabel(n as u8));
+                                    }
+                                }
+                            });
+                        }
+                        MenuItem::Transitions => {
+                            ui.menu_button("Add Transition", |ui| {
+                                let names = effects
+                                    .iter()
+                                    .filter(|e| e["kind"] == "transition")
+                                    .filter_map(|e| e["name"].as_str())
+                                    .filter(|&n| {
+                                        kind != Some(TrackKind::Audio) || n == "crossfade"
+                                    });
+                                for n in names {
+                                    if ui.button(n).clicked() {
+                                        transition = Some(n.to_string());
+                                    }
+                                }
+                            });
+                        }
+                    }
+                }
+            });
         }
         if resp.hovered() {
             let d = ui.input(|i| i.smooth_scroll_delta());
@@ -418,6 +707,11 @@ impl App {
                 t.ui.scroll = (t.ui.scroll + dt).max(0);
             }
         }
+        // For file drops (U-ED-16): the track and time under the pointer.
+        self.pointer_track = latest.filter(|&p| rows_area.contains(p)).and_then(|p| {
+            let (x, y) = local(p);
+            row_at(y).map(|tr| (tr, raw_time(x)))
+        });
         let drop = resp.dnd_release_payload::<Id>().zip(pos);
         if let Some(tid) = target_click {
             let ui_state = &mut t.ui;
@@ -433,46 +727,66 @@ impl App {
                 ui_state.targets.clear();
             }
         }
+        let menu_hit = self.menu.as_ref().map(|m| m.0);
         self.apply(ops);
         self.edit(toggles);
+        if let Some(a) = chosen {
+            self.run_action(a);
+        }
+        if let (
+            Some(effect),
+            Some(Hit::Clip { track_id, time, .. } | Hit::Empty { track_id, time }),
+        ) = (transition, menu_hit)
+        {
+            let ops = crate::transition_at(&project, seq.id, track_id, time, &effect);
+            if ops.is_empty() {
+                self.status = "no place for a transition there".into();
+            }
+            self.apply(ops);
+        }
         if let Some((media, p)) = drop {
             let (x, y) = local(p);
-            self.drop_media(*media, row_at(y), lay.x_to_time(x.max(HEADER)).max(0));
+            self.drop_media(&[*media], row_at(y), raw_time(x));
         }
     }
 
-    /// Bin to timeline drop: `AddClip` overwrite, linked audio when the media has both (U-APP-4).
-    fn drop_media(&mut self, media_id: Id, track: Option<Id>, at: Time) {
+    /// Bin or file drop (U-APP-4, U-ED-16): one batch of `AddClip` overwrite on `track`, the
+    /// first at the snapped `at`, each next where the previous ends; linked audio when the media
+    /// has both.
+    pub(super) fn drop_media(&mut self, media: &[Id], track: Option<Id>, at: Time) {
         let Some(t) = self.tab() else { return };
         let p = &t.project;
-        let (Some(track_id), Some(m)) = (track, p.media.iter().find(|m| m.id == media_id)) else {
+        let Some((seq, track)) = track.and_then(|id| p.track(id)) else {
             return;
         };
-        let Some((seq, track)) = p.track(track_id) else {
-            return;
-        };
-        let tol = (8.0 * S / t.ui.px_per_sec).round() as Time;
-        let start = crate::snap(at, p, &t.ui, &[], tol);
-        let duration = m.spec.duration.unwrap_or(5 * adit_core::FLICKS_PER_SECOND);
-        let linked = (track.kind == TrackKind::Video && m.spec.audio.is_some())
-            .then(|| {
-                seq.tracks
-                    .iter()
-                    .find(|x| x.kind == TrackKind::Audio && !x.locked)
-                    .map(|x| x.id)
-            })
-            .flatten();
-        let cmd = Command::AddClip {
-            track_id,
-            linked_track_id: linked,
-            source: ClipSource::Media { media_id },
-            start,
-            duration,
-            source_in: 0,
-            mode: PlaceMode::Overwrite,
-            name: None,
-        };
-        self.edit(vec![cmd]);
+        let audio = seq
+            .tracks
+            .iter()
+            .find(|x| x.kind == TrackKind::Audio && !x.locked)
+            .map(|x| x.id);
+        let mut start = crate::snap(at, p, &t.ui, &[], tolerance(&t.ui));
+        let mut cmds = Vec::new();
+        for &media_id in media {
+            let Some(m) = p.media.iter().find(|m| m.id == media_id) else {
+                continue;
+            };
+            let duration = m.spec.duration.unwrap_or(5 * adit_core::FLICKS_PER_SECOND);
+            let linked = (track.kind == TrackKind::Video && m.spec.audio.is_some())
+                .then_some(audio)
+                .flatten();
+            cmds.push(Command::AddClip {
+                track_id: track.id,
+                linked_track_id: linked,
+                source: ClipSource::Media { media_id },
+                start,
+                duration,
+                source_in: 0,
+                mode: PlaceMode::Overwrite,
+                name: None,
+            });
+            start += duration;
+        }
+        self.edit(cmds);
     }
 }
 
@@ -517,7 +831,7 @@ fn hit_track(h: &Hit) -> Option<Id> {
 fn preview(
     p: &egui::Painter,
     project: &Project,
-    ui: &crate::UiState,
+    ui: &UiState,
     from: Hit,
     to: Time,
     to_track: Option<Id>,

@@ -49,6 +49,16 @@ enum Dialog {
         mark_out: Option<Time>,
         rect: Option<[f64; 4]>,
         text: String,
+        /// A request to change adit itself (U-ED-18), from this panel if any.
+        app: bool,
+        panel: Option<String>,
+    },
+    /// U-ED-19: files for Claude to bring in as `text` says.
+    AiImport {
+        pid: String,
+        sequence_id: Id,
+        paths: Vec<String>,
+        text: String,
     },
     ConfirmClose,
     CloseProject {
@@ -63,6 +73,7 @@ impl Dialog {
             Dialog::Speed { pid, .. }
             | Dialog::Gain { pid, .. }
             | Dialog::Wand { pid, .. }
+            | Dialog::AiImport { pid, .. }
             | Dialog::CloseProject { pid, .. } => Some(pid),
             Dialog::ConfirmClose => None,
         }
@@ -124,7 +135,25 @@ pub struct App {
     /// `ui_screenshot` callers waiting for the next painted frame.
     shots: Vec<std::sync::mpsc::SyncSender<Arc<egui::ColorImage>>>,
     shots_since: Option<Instant>,
+    ctx: egui::Context,
+    /// Copied clips, shared by all tabs (U-ED-10).
+    clipboard: Vec<crate::ClipboardItem>,
+    /// Timeline right-click menu: the hit it was opened on and its items (U-ED-10).
+    menu: Option<(crate::Hit, Vec<crate::MenuItem>)>,
+    uniform_scale: bool,
+    /// Program monitor divisor 1, 2 or 4 (U-ED-17).
+    preview_scale: u32,
+    /// Waveforms by media path, `None` while computing (U-ED-14).
+    waves: worker::Worker<Vec<String>, Vec<(String, Wave)>>,
+    wave_cache: HashMap<String, Option<Wave>>,
+    /// Panels a wand click may name, with their rects this frame (U-ED-18).
+    panel_rects: Vec<(&'static str, egui::Rect)>,
+    wand_panel_press: Option<egui::Pos2>,
+    /// Track and unsnapped time under the pointer in the timeline, for file drops (U-ED-16).
+    pointer_track: Option<(Id, Time)>,
 }
+
+type Wave = Result<Arc<Vec<f32>>, String>;
 
 const S: f64 = FLICKS_PER_SECOND as f64;
 
@@ -133,6 +162,7 @@ impl App {
         let ctx = cc.egui_ctx.clone();
         ctx.set_theme(egui::Theme::Dark);
         let shared = Arc::new(bridge::Shared::default());
+        let s3 = session.clone();
         let mut app = App {
             monitors: monitors::Monitors::new(&ctx, &session),
             playback: playback::Playback::default(),
@@ -163,6 +193,27 @@ impl App {
             allow_close: false,
             shots: Vec::new(),
             shots_since: None,
+            ctx: ctx.clone(),
+            clipboard: Vec::new(),
+            menu: None,
+            uniform_scale: true,
+            preview_scale: 2,
+            waves: worker::Worker::new(&ctx, move |paths: Vec<String>| {
+                paths
+                    .into_iter()
+                    .map(|p| {
+                        let w = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            s3.waveform(&p)
+                        }))
+                        .unwrap_or_else(|_| Err("waveform panicked".into()));
+                        (p, w)
+                    })
+                    .collect()
+            }),
+            wave_cache: HashMap::new(),
+            panel_rects: Vec::new(),
+            wand_panel_press: None,
+            pointer_track: None,
         };
         let mut want = None;
         if let Some(path) = app.options.open.clone() {
@@ -196,8 +247,123 @@ impl App {
 
     /// Opens the AI import dialog for these files (GUI.md U-ED-19).
     pub fn ai_import(&mut self, paths: Vec<String>) {
-        let _ = paths;
-        todo!("U-ED-19")
+        let Some(t) = self.tab() else {
+            self.status = "open a project first".into();
+            return;
+        };
+        self.dialog = Some(Dialog::AiImport {
+            pid: t.id.clone(),
+            sequence_id: t.ui.sequence_id,
+            paths,
+            text: String::new(),
+        });
+    }
+
+    /// File > AI Import... and the Project panel menu: asks for files first (U-ED-19).
+    fn ai_import_pick(&mut self) {
+        if let Some(files) = rfd::FileDialog::new().pick_files() {
+            self.ai_import(
+                files
+                    .iter()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect(),
+            );
+        }
+    }
+
+    /// The wand prompt for a change to adit itself (U-ED-18).
+    fn app_wand(&mut self, panel: Option<&str>, rect: Option<[f64; 4]>) {
+        let Some(t) = self.tab() else {
+            self.status = "open a project first".into();
+            return;
+        };
+        self.dialog = Some(Dialog::Wand {
+            pid: t.id.clone(),
+            sequence_id: t.ui.sequence_id,
+            clips: Vec::new(),
+            mark_in: None,
+            mark_out: None,
+            rect,
+            text: String::new(),
+            app: true,
+            panel: panel.map(str::to_string),
+        });
+    }
+
+    /// Tool `Wand`: a click or rectangle on a panel listed in `panel_rects` (U-ED-18).
+    fn wand_panels(&mut self, ctx: &egui::Context, had_dialog: bool) {
+        if had_dialog
+            || self.dialog.is_some()
+            || self.ui_state().map(|u| u.tool) != Some(crate::Tool::Wand)
+        {
+            self.wand_panel_press = None;
+            return;
+        }
+        let (pressed, released, pos) = ctx.input(|i| {
+            (
+                i.pointer.primary_pressed(),
+                i.pointer.primary_released(),
+                i.pointer.interact_pos(),
+            )
+        });
+        let panel_at = |p: egui::Pos2| {
+            self.panel_rects
+                .iter()
+                .find(|(_, r)| r.contains(p))
+                .map(|(n, _)| *n)
+        };
+        if pressed {
+            // Not through a menu or popup lying over the panel.
+            self.wand_panel_press = pos.filter(|&p| {
+                panel_at(p).is_some()
+                    && ctx
+                        .layer_id_at(p)
+                        .is_none_or(|l| l.order == egui::Order::Background)
+            });
+        }
+        if !released {
+            return;
+        }
+        let (Some(a), Some(b)) = (self.wand_panel_press.take(), pos) else {
+            return;
+        };
+        let w = ctx.content_rect();
+        let rect = (a.distance(b) > 4.0).then(|| {
+            let r = egui::Rect::from_two_pos(a, b).intersect(w);
+            [
+                ((r.left() - w.left()) / w.width()) as f64,
+                ((r.top() - w.top()) / w.height()) as f64,
+                (r.width() / w.width()) as f64,
+                (r.height() / w.height()) as f64,
+            ]
+        });
+        let panel = panel_at(a);
+        self.app_wand(panel, rect);
+    }
+
+    /// Files dropped on the window: one `media_import`, then placed if over a track (U-ED-16).
+    fn file_drop(&mut self, ctx: &egui::Context) {
+        let paths: Vec<String> = ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .map(|f| f.path().to_string_lossy().into_owned())
+                .collect()
+        });
+        if paths.is_empty() {
+            return;
+        }
+        let Some(v) = self.pcall("media_import", json!({ "paths": paths })) else {
+            return;
+        };
+        self.status = format!("imported {} file(s)", paths.len());
+        let ids: Vec<Id> = v["media"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|m| m["id"].as_u64()).collect())
+            .unwrap_or_default();
+        if let Some((track, at)) = self.pointer_track {
+            self.drop_media(&ids, Some(track), at);
+        }
     }
 
     /// Runs an action exactly as its key would (applies the resulting `Op`s through the session).
@@ -206,11 +372,25 @@ impl App {
             return;
         };
         let project = t.project.clone();
+        // Taken before `perform`: Cut clears the selection like Delete (U-ED-1).
+        let copied =
+            matches!(action, Action::Copy | Action::Cut).then(|| crate::copy(&project, &t.ui));
         let ops = crate::perform(action, &project, &mut t.ui);
         if ops.is_empty() {
             self.explain_locked(action);
         }
-        self.apply(ops);
+        for op in ops {
+            match (&op, &copied) {
+                (Op::Copy, Some(c)) => self.set_clipboard(c.clone()),
+                _ => self.apply(vec![op]),
+            }
+        }
+    }
+
+    /// U-ED-10, U-ED-21: the shared clipboard, and text so the OS delivers a paste event for ^V.
+    fn set_clipboard(&mut self, items: Vec<crate::ClipboardItem>) {
+        self.clipboard = items;
+        self.ctx.copy_text("adit clips".into());
     }
 
     /// An edit that did nothing because every clip it would touch is on a locked track (U-FIX-1)
@@ -430,7 +610,19 @@ impl App {
     fn apply(&mut self, ops: Vec<Op>) {
         for op in ops {
             match op {
-                Op::Copy | Op::Paste => todo!("U-ED-10"),
+                Op::Copy => {
+                    let Some(t) = self.tab() else { continue };
+                    let items = crate::copy(&t.project, &t.ui);
+                    self.set_clipboard(items);
+                }
+                Op::Paste => {
+                    let Some(t) = self.tabs.get_mut(self.active) else {
+                        continue;
+                    };
+                    let project = t.project.clone();
+                    let ops = crate::paste(&self.clipboard, &project, &mut t.ui);
+                    self.apply(ops);
+                }
                 Op::Edit(c) => {
                     self.edit(c);
                 }
@@ -472,6 +664,8 @@ impl App {
                         mark_out: t.ui.mark_out,
                         rect: self.wand_rect,
                         text: String::new(),
+                        app: false,
+                        panel: None,
                     };
                     self.wand_rect = None;
                     self.dialog = Some(d);
@@ -625,6 +819,13 @@ impl App {
         }
         let events = ctx.input(|i| i.events.clone());
         for e in events {
+            // The OS turns ^C / ^X / ^V into these instead of key events (U-ED-10).
+            match e {
+                egui::Event::Copy => self.run_action(Action::Copy),
+                egui::Event::Cut => self.run_action(Action::Cut),
+                egui::Event::Paste(_) => self.run_action(Action::Paste),
+                _ => {}
+            }
             if let egui::Event::Key {
                 key,
                 pressed: true,
@@ -653,6 +854,9 @@ impl App {
             }
             if let Some(t) = self.tabs.get_mut(self.active) {
                 s.apply(&mut t.ui);
+            }
+            if let Some(d) = s.preview_scale {
+                self.preview_scale = d;
             }
         }
     }
@@ -706,8 +910,14 @@ impl eframe::App for App {
             self.playback.stop();
         }
         if let Some(t) = self.tabs.get(self.active) {
-            self.monitors
-                .update(&t.id, t.revision, &t.project, &t.ui, &mut self.status);
+            self.monitors.update(
+                &t.id,
+                t.revision,
+                &t.project,
+                &t.ui,
+                self.preview_scale,
+                &mut self.status,
+            );
         }
         self.monitors.upload(&ctx);
 
@@ -717,13 +927,17 @@ impl eframe::App for App {
             self.dialog = Some(Dialog::ConfirmClose);
         }
 
+        let had_dialog = self.dialog.is_some();
         self.draw(ui);
+        self.wand_panels(&ctx, had_dialog);
+        self.file_drop(&ctx);
 
         // Poll the session for edits made over MCP (U-APP-3), when idle at most every 500 ms
         // (U-FIX-13). Bridge calls, finished renders and playback wake the window themselves.
         ctx.request_repaint_after(Duration::from_millis(500));
         self.shared.set_mirror(
             self.project_id().map(str::to_string),
+            self.preview_scale,
             self.tabs
                 .iter()
                 .map(|t| (t.id.clone(), t.ui.clone()))

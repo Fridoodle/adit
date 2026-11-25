@@ -22,6 +22,9 @@ pub struct UiSet {
     pub mark_in: Option<Option<Time>>,
     pub mark_out: Option<Option<Time>>,
     pub tool: Option<Tool>,
+    pub snap: Option<bool>,
+    /// Program monitor divisor (U-ED-17); applied to the window, not to a tab.
+    pub preview_scale: Option<u32>,
 }
 
 impl UiSet {
@@ -45,6 +48,9 @@ impl UiSet {
         if let Some(t) = self.tool {
             ui.tool = t;
         }
+        if let Some(s) = self.snap {
+            ui.snap = s;
+        }
     }
 }
 
@@ -67,6 +73,7 @@ struct Mirror {
     active: Option<String>,
     tabs: Vec<(String, UiState)>,
     pending: Vec<UiSet>,
+    preview_scale: u32,
 }
 
 #[derive(Default)]
@@ -83,11 +90,17 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 impl Shared {
     /// The window's state after a frame. Skipped while `ui_set`s wait to be applied: the mirror
     /// already shows them and the next frame writes it again.
-    pub fn set_mirror(&self, active: Option<String>, tabs: Vec<(String, UiState)>) {
+    pub fn set_mirror(
+        &self,
+        active: Option<String>,
+        preview_scale: u32,
+        tabs: Vec<(String, UiState)>,
+    ) {
         let mut m = lock(&self.mirror);
         if m.pending.is_empty() {
             m.active = active;
             m.tabs = tabs;
+            m.preview_scale = preview_scale;
         }
     }
     pub fn take_pending(&self) -> Vec<UiSet> {
@@ -141,6 +154,7 @@ pub fn state_json(pid: &str, u: &UiState) -> Value {
         "mark_out": u.mark_out,
         "tool": tool_name(u.tool),
         "playing": u.playing,
+        "snap": u.snap,
     })
 }
 
@@ -207,6 +221,19 @@ impl Bridge {
                 .ok_or_else(|| format!("unknown tool {t}"))?;
             s.tool = Some(tool.0);
         }
+        if let Some(x) = v.get("snap") {
+            s.snap = Some(
+                x.as_bool()
+                    .ok_or_else(|| format!("snap must be true or false, got {x}"))?,
+            );
+        }
+        if let Some(x) = v.get("preview_scale") {
+            let d = x
+                .as_u64()
+                .filter(|d| [1, 2, 4].contains(d))
+                .ok_or_else(|| format!("preview_scale must be 1, 2 or 4, got {x}"))?;
+            s.preview_scale = Some(d as u32);
+        }
         if let Some(sel) = v.get("selection") {
             let ids: Vec<Id> = sel
                 .as_array()
@@ -251,7 +278,9 @@ impl UiBridge for Bridge {
             .iter()
             .find(|(id, _)| id == pid)
             .ok_or("no project is open in the window")?;
-        Ok(state_json(pid, u))
+        let mut v = state_json(pid, u);
+        v["preview_scale"] = json!(m.preview_scale);
+        Ok(v)
     }
 
     fn set(&self, v: &Value) -> Result<(), String> {
@@ -263,7 +292,11 @@ impl UiBridge for Bridge {
             None => m.tabs.push((pid.clone(), ui)),
         }
         m.active = Some(pid);
+        if let Some(d) = s.preview_scale {
+            m.preview_scale = d;
+        }
         m.pending.push(s);
+
         drop(m);
         self.ctx.request_repaint();
         Ok(())
