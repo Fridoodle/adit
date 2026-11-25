@@ -14,4 +14,10 @@ Concerns: `crates/adit-core/src/{engine,document}.rs`, `crates/adit-core/tests/`
   nothing) and the `CloseGap` `>` vs `>=` (a clip starting at `time` is rejected either way).
 - First run: 495 of 517 viable mutants caught; after boundary tests 18 more killed, 4 equivalent.
 
+- Run after PasteClips / labels (2026-11-25): 566 mutants, 413 caught, 8 missed, none in the new
+  code. Besides the 4 above, still open in old H-3 code: `document.rs` marker `> MAX_TIME` (`==`, `>=`),
+  `engine.rs` `step` `!end_ok(c) || ..` (`&&`), `AddClip` `upto(start + duration)` (`-`). The last two
+  look equivalent (validate / the post-check in `step` reject the same input); the marker boundary
+  needs a test at exactly `MAX_TIME`.
+
 Verified: 2026-11-25
