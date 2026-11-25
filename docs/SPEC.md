@@ -514,6 +514,11 @@ conversion). Pixel tests allow ±2 per 8-bit channel.
   `stroke {width: 2, r: 0, g: 0, b: 0, a: 1}`, `noise {amount: 0.1, seed: 0}`.
   Transitions: `cross_dissolve`, `dip_to_black`, `wipe`, `push` (V-9).
   Every built-in passes `validate_effect`. Names are unique.
+- **E-BLUR-1 Separable blur.** For speed the renderer may run the built-in `gaussian_blur` as two
+  1-D passes of the same kernel (horizontal, then vertical). A project effect of that name (E-3) is
+  never replaced. On an opaque input the result matches a project effect with the built-in's exact
+  `wgsl` and params under another name within 2 per channel (8-bit), at any radius, including the
+  frame edges.
 
 - **E-6 Clarifications.** The anchor (V-6) is only the pivot for scale and rotation: changing it alone
   does not move the image. Inside a transition window the clips' own blend modes are ignored (V-9;
